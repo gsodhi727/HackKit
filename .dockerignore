@@ -1,0 +1,13 @@
+# Docker build context — ignore large/unnecessary files
+.git
+workspace/
+*.log
+*.zip
+*.tar.gz
+__pycache__/
+*.pyc
+.env
+recon-*/
+xss-*/
+fuzz-*/
+node_modules/

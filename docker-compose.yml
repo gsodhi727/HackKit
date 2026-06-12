@@ -1,0 +1,62 @@
+version: "3.9"
+
+# ============================================================
+#  HackKit — Docker Compose
+#  Usage:
+#    docker compose run --rm hackkit           # interactive shell
+#    docker compose run --rm hackkit recon     # run recon.sh
+#    docker compose run --rm hackkit xss       # run xss-hunt.sh
+# ============================================================
+
+services:
+  hackkit:
+    image: hackkit:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hackkit
+    hostname: hackkit
+
+    # ── Interactive terminal ───────────────────────────────────
+    stdin_open: true
+    tty: true
+
+    # ── Shared volumes ────────────────────────────────────────
+    volumes:
+      # Your target workspace (create this folder on your host)
+      - ./workspace:/root/workspace
+
+      # Persist wordlists so they survive container restarts
+      - hackkit-wordlists:/root/wordlists
+
+      # Persist Go tool binaries
+      - hackkit-gobin:/root/go/bin
+
+      # Persist Python tools
+      - hackkit-tools:/root/tools
+
+      # Persist nuclei templates
+      - hackkit-nuclei:/root/nuclei-templates
+
+    # ── Network: host mode gives tools full network access ────
+    network_mode: host
+
+    # ── Capabilities needed for raw sockets (nmap, masscan) ──
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # ── Environment ───────────────────────────────────────────
+    environment:
+      - TERM=xterm-256color
+      - LANG=en_US.UTF-8
+
+    # ── Default entrypoint (override with 'command') ──────────
+    entrypoint: ["/bin/bash", "-c", "cat /etc/motd; exec zsh -l"]
+
+# ──────────────── Named volumes ───────────────────────────────
+volumes:
+  hackkit-wordlists:
+  hackkit-gobin:
+  hackkit-tools:
+  hackkit-nuclei:

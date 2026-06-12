@@ -1,0 +1,30 @@
+# ============================================================
+#  .gitignore — HackKit
+#  Author: gsodhi727
+# ============================================================
+
+# Logs
+*.log
+/tmp/hackkit_*.log
+
+# Build artifacts
+*.zip
+*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tool output / recon results (don't commit target data!)
+recon-*/
+xss-*/
+fuzz-*/
+workspace/
+*.txt.bak
