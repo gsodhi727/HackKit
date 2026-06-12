@@ -180,6 +180,11 @@ RUN nuclei -update-templates -silent 2>/dev/null || true
 # ─────────────────────────────────────────────────────────────
 # Stage 8: Shell environment
 # ─────────────────────────────────────────────────────────────
+COPY install.sh /opt/hackkit/
+COPY scripts/ /opt/hackkit/scripts/
+RUN chmod +x /opt/hackkit/install.sh && find /opt/hackkit/scripts -type f -name "*.sh" -exec chmod +x {} +
+
+# ── 15. Container Aliases & Tmux ──
 COPY docker/hackkit.sh /etc/profile.d/hackkit.sh
 RUN chmod +x /etc/profile.d/hackkit.sh
 
@@ -210,7 +215,7 @@ RUN cat > /etc/motd <<'MOTD'
 
   Bug Bounty Toolkit  ·  by gsodhi727  ·  github.com/gsodhi727/hackkit
   Type 'tools' to list tool dirs, 'wl' to list wordlists.
-  Run 'bash /opt/hackkit/recon.sh -d target.com' to start!
+  Run 'bash /opt/hackkit/scripts/recon/recon.sh -d target.com' to start!
 
 MOTD
 

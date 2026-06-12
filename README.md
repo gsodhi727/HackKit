@@ -16,6 +16,14 @@
 
 ---
 
+## 📋 Prerequisites
+
+- **OS:** Ubuntu 22.04 LTS, Debian 12, or Kali Linux 2024
+- **Python:** Python 3.8+ (Virtual Environment recommended)
+- **System Tools:** `nmap`, `sqlmap`, `git`, `curl` (automatically installed via `install.sh`)
+
+---
+
 ## 🚀 Quick Start — Pick Your Method
 
 ```bash
@@ -285,20 +293,20 @@ Your **`workspace/`** folder is bind-mounted from the host, so all recon results
 
 ```bash
 # Full recon pipeline
-bash recon.sh -d target.com
-bash recon.sh -d target.com -o ./results --skip-screenshots
+bash scripts/recon/recon.sh -d target.com
+bash scripts/recon/recon.sh -d target.com -o ./results --skip-screenshots
 
 # XSS hunting
-bash xss-hunt.sh -d target.com
-bash xss-hunt.sh -d target.com -b https://your.xss.ht
+bash scripts/exploitation/xss-hunt.sh -d target.com
+bash scripts/exploitation/xss-hunt.sh -d target.com -b https://your.xss.ht
 
 # Fuzzing
-bash fuzz.sh -u https://target.com -m dir
-bash fuzz.sh -u https://target.com -m vhost
-bash fuzz.sh -u https://target.com -m param
+bash scripts/fuzzing/fuzz.sh -u https://target.com -m dir
+bash scripts/fuzzing/fuzz.sh -u https://target.com -m vhost
+bash scripts/fuzzing/fuzz.sh -u https://target.com -m param
 
 # Update all tools
-sudo bash update.sh
+sudo bash scripts/utilities/update.sh
 ```
 
 Inside Docker, these are available as short aliases:
@@ -339,10 +347,12 @@ hackkit/
 ├── install.sh           ← Direct installer (Method 1)
 ├── Dockerfile           ← Docker image definition (Method 2)
 ├── docker-compose.yml   ← Docker Compose with volumes
-├── recon.sh             ← Recon automation pipeline
-├── xss-hunt.sh          ← XSS discovery pipeline
-├── fuzz.sh              ← Multi-mode fuzzer
-├── update.sh            ← One-command tool updater
+├── requirements.txt     ← Python dependencies
+├── scripts/
+│   ├── recon/           ← Recon automation pipeline (recon.sh)
+│   ├── exploitation/    ← XSS discovery pipeline (xss-hunt.sh)
+│   ├── fuzzing/         ← Multi-mode fuzzer (fuzz.sh)
+│   └── utilities/       ← One-command tool updater (update.sh)
 ├── docker/
 │   ├── hackkit.sh       ← Aliases for container sessions
 │   └── .tmux.conf       ← Tmux config
@@ -370,4 +380,4 @@ PRs welcome! To add a tool:
 
 ## 📄 License
 
-[MIT](LICENSE) — by **guru** · free to fork, customize, and share.
+[MIT](LICENSE) — by **gsodhi727** · free to fork, customize, and share.

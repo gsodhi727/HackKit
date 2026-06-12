@@ -4,8 +4,8 @@ version: "3.9"
 #  HackKit — Docker Compose
 #  Usage:
 #    docker compose run --rm hackkit           # interactive shell
-#    docker compose run --rm hackkit recon     # run recon.sh
-#    docker compose run --rm hackkit xss       # run xss-hunt.sh
+#    docker compose run --rm hackkit scripts/recon/recon.sh     # run recon.sh
+#    docker compose run --rm hackkit scripts/exploitation/xss-hunt.sh       # run xss-hunt.sh
 # ============================================================
 
 services:

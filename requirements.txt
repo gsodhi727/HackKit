@@ -1,0 +1,16 @@
+wafw00f
+arjun
+uro
+jsbeautifier
+holehe
+sherlock
+dnsdumpster
+requests
+httpx
+aiohttp
+dnspython
+beautifulsoup4
+lxml
+colorama
+tabulate
+tqdm
