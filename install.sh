@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  HackKit — Bug Bounty Toolkit Installer
-#  Version : 2.0.0
+#  Version : 2.1.0
 #  Author  : gsodhi727  (github.com/guru)
 #  GitHub  : https://github.com/gsodhi727/hackkit
 #  License : MIT
@@ -18,9 +18,43 @@ LOG_FILE="/tmp/hackkit_install_$(date +%Y%m%d_%H%M%S).log"
 TOOLS_DIR="$HOME/tools"
 WORDLISTS_DIR="$HOME/wordlists"
 GO_VERSION="1.22.4"
+FEROX_VERSION="2.11.0"          # pinned; see install_feroxbuster
 PYTHON_VENV="$HOME/.hackkit-venv"
 ALIAS_FILE="/etc/profile.d/hackkit.sh"
 PASS=0; FAIL=0; SKIP=0
+
+# Repo root (so we can find manifests/ and bin/ regardless of CWD)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GO_MANIFEST="$REPO_DIR/manifests/go-tools.txt"
+
+# Resume / reproducibility state
+STATE_DIR="$HOME/.hackkit"
+STATE_FILE="$STATE_DIR/install-state"   # one completed step name per line
+LOCK_FILE="$STATE_DIR/tools.lock"       # resolved tool versions after install
+RESUME=false                            # --resume: skip steps already marked done
+FORCE=false                             # --force: redo steps even if marked done
+ASSUME_YES=false                        # -y / --yes: no prompt
+
+# ──────────────────────── ARG PARSING ────────────────────────
+for arg in "$@"; do
+  case "$arg" in
+    --resume)      RESUME=true ;;
+    --force)       FORCE=true ;;
+    -y|--yes)      ASSUME_YES=true ;;
+    -h|--help)
+      cat <<USAGE
+HackKit installer
+  sudo bash install.sh [options]
+
+Options:
+  --resume    Skip steps already completed in a previous run (idempotent re-run)
+  --force     Re-run every step even if previously completed
+  -y, --yes   Do not prompt for confirmation
+  -h, --help  Show this help
+USAGE
+      exit 0 ;;
+  esac
+done
 
 # ──────────────────────── BANNER ─────────────────────────────
 banner() {
@@ -35,7 +69,7 @@ cat <<'EOF'
 
 EOF
   echo -e "${CYAN}${BOLD}  ┌──────────────────────────────────────────────────────────────┐${RESET}"
-  echo -e "${CYAN}${BOLD}  │    Bug Bounty Toolkit Installer  v2.0  ·  by gsodhi727            │${RESET}"
+  echo -e "${CYAN}${BOLD}  │    Bug Bounty Toolkit Installer  v2.1  ·  by gsodhi727            │${RESET}"
   echo -e "${CYAN}${BOLD}  │    github.com/gsodhi727/hackkit        ·  80+ tools               │${RESET}"
   echo -e "${CYAN}${BOLD}  └──────────────────────────────────────────────────────────────┘${RESET}"
   echo ""
@@ -69,16 +103,85 @@ run_quiet() {
   if "$@" >> "$LOG_FILE" 2>&1; then return 0; else return 1; fi
 }
 
+# ── Retry a command with exponential backoff (for flaky networks) ──
+# Usage: retry <attempts> <cmd> [args...]
+retry() {
+  local attempts="$1"; shift
+  local n=1 delay=2
+  while true; do
+    if "$@" >> "$LOG_FILE" 2>&1; then return 0; fi
+    if (( n >= attempts )); then
+      log "[RETRY] giving up after $n attempts: $*"
+      return 1
+    fi
+    log "[RETRY] attempt $n failed, retrying in ${delay}s: $*"
+    sleep "$delay"
+    n=$(( n + 1 )); delay=$(( delay * 2 ))
+  done
+}
+
+# ── Step-level state (idempotency / --resume) ─────────────────
+init_state() { mkdir -p "$STATE_DIR"; touch "$STATE_FILE"; }
+
+step_done() { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
+
+mark_done() { step_done "$1" || echo "$1" >> "$STATE_FILE"; }
+
+# do_step <name> <function>: run a step unless --resume says it's already done.
+# A step is marked "done" only if it added no new failures, so --resume
+# re-runs steps that had failures (already-installed items skip quickly).
+# --force re-runs everything regardless.
+do_step() {
+  local name="$1"; local fn="$2"
+  if $RESUME && ! $FORCE && step_done "$name"; then
+    section "$name"
+    info "Already completed in a previous run — skipping (use --force to redo)."
+    return 0
+  fi
+  local fail_before=$FAIL
+  "$fn" || true
+  if (( FAIL == fail_before )); then
+    mark_done "$name"
+  else
+    warn "Step '$name' had failures — not marked complete (will retry on --resume)."
+  fi
+}
+
+# ── Record a resolved tool version into the lockfile ──────────
+record_lock() {
+  local name="$1" value="$2"
+  [[ -z "$value" ]] && return 0
+  mkdir -p "$STATE_DIR"
+  # replace any existing line for this tool, then append
+  if [[ -f "$LOCK_FILE" ]]; then
+    grep -vE "^${name}[[:space:]]" "$LOCK_FILE" > "$LOCK_FILE.tmp" 2>/dev/null || true
+    mv "$LOCK_FILE.tmp" "$LOCK_FILE"
+  fi
+  printf '%s\t%s\n' "$name" "$value" >> "$LOCK_FILE"
+}
+
+# Resolve the module version baked into an installed Go binary.
+go_installed_version() {
+  local bin; bin="$(command -v "$1" 2>/dev/null)" || return 0
+  [[ -n "$bin" ]] || return 0
+  go version -m "$bin" 2>/dev/null | awk '$1=="mod"{print $3; exit}'
+}
+
 # ── Go tool via `go install` ──────────────────────────────────
+# Usage: install_go_tool <name> <module> [version]   (version default: latest)
 install_go_tool() {
   local name="$1"
   local pkg="$2"
+  local ver="${3:-latest}"
   progress "$name"
-  if command -v "$name" &>/dev/null; then
-    done_skip; ((SKIP++)) || true; return 0
+  if command -v "$name" &>/dev/null && ! $FORCE; then
+    done_skip; ((SKIP++)) || true
+    record_lock "$name" "$(go_installed_version "$name")"
+    return 0
   fi
-  if run_quiet go install -v "$pkg@latest"; then
+  if retry 3 go install -v "$pkg@$ver"; then
     done_ok; ((PASS++)) || true
+    record_lock "$name" "$(go_installed_version "$name")"
   else
     done_fail; ((FAIL++)) || true
   fi
@@ -93,10 +196,11 @@ install_python_tool() {
   if [[ -d "$dest" ]]; then
     done_skip; ((SKIP++)) || true; return 0
   fi
-  if run_quiet git clone --depth 1 "$repo" "$dest"; then
+  if retry 3 git clone --depth 1 "$repo" "$dest"; then
     if [[ -f "$dest/requirements.txt" ]]; then
-      run_quiet "$PYTHON_VENV/bin/pip" install -r "$dest/requirements.txt" --quiet
+      retry 2 "$PYTHON_VENV/bin/pip" install -r "$dest/requirements.txt" --quiet
     fi
+    record_lock "$name" "$(git -C "$dest" rev-parse --short HEAD 2>/dev/null)"
     done_ok; ((PASS++)) || true
   else
     done_fail; ((FAIL++)) || true
@@ -189,11 +293,39 @@ install_go() {
   local tarball="go${GO_VERSION}.linux-${go_arch}.tar.gz"
   local url="https://go.dev/dl/$tarball"
 
-  if run_quiet curl -fsSL "$url" -o "/tmp/$tarball" && \
-     run_quiet tar -C /usr/local -xzf "/tmp/$tarball"; then
+  # Fetch the official SHA256 for this exact file from go.dev's signed
+  # download manifest, so we verify integrity instead of trusting the
+  # transport alone (no more unverified tarball).
+  local expected_sha
+  expected_sha=$(curl -fsSL "https://go.dev/dl/?mode=json&include=all" 2>>"$LOG_FILE" \
+    | jq -r --arg f "$tarball" '.[].files[] | select(.filename==$f) | .sha256' 2>/dev/null \
+    | head -n1)
+
+  if ! retry 3 curl -fsSL "$url" -o "/tmp/$tarball"; then
+    done_fail; error "Go download failed — Go tools will be skipped."; return 1
+  fi
+
+  if [[ -n "$expected_sha" && "$expected_sha" != "null" ]]; then
+    local actual_sha
+    actual_sha=$(sha256sum "/tmp/$tarball" | awk '{print $1}')
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
+      done_fail
+      error "Go checksum MISMATCH — refusing to install."
+      error "  expected: $expected_sha"
+      error "  actual:   $actual_sha"
+      rm -f "/tmp/$tarball"
+      return 1
+    fi
+    log "[OK] Go tarball sha256 verified: $actual_sha"
+  else
+    warn "Could not fetch official Go checksum — proceeding without verification."
+  fi
+
+  if run_quiet tar -C /usr/local -xzf "/tmp/$tarball"; then
     ln -sf /usr/local/go/bin/go    /usr/local/bin/go
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
     rm -f "/tmp/$tarball"
+    record_lock "go" "$GO_VERSION"
     done_ok
   else
     done_fail
@@ -250,94 +382,76 @@ setup_python_env() {
 install_go_tools() {
   section "Go-Based Tools"
 
-  # ── Subdomain & Recon ──
-  install_go_tool "subfinder"         "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
-  install_go_tool "assetfinder"       "github.com/tomnomnom/assetfinder"
-  install_go_tool "amass"             "github.com/owasp-amass/amass/v4/..."
-  install_go_tool "chaos"             "github.com/projectdiscovery/chaos-client/cmd/chaos"
-  install_go_tool "crobat"            "github.com/cgboal/sonarsearch/cmd/crobat"
-  install_go_tool "gotator"           "github.com/Josue87/gotator"
-  install_go_tool "alterx"            "github.com/projectdiscovery/alterx/cmd/alterx"
+  if [[ ! -f "$GO_MANIFEST" ]]; then
+    error "Go tools manifest not found: $GO_MANIFEST"
+    warn  "Did you clone the full repo? Skipping Go tools."
+    return 1
+  fi
 
-  # ── HTTP & Probing ──
-  install_go_tool "httpx"             "github.com/projectdiscovery/httpx/cmd/httpx"
-  install_go_tool "httprobe"          "github.com/tomnomnom/httprobe"
-  install_go_tool "katana"            "github.com/projectdiscovery/katana/cmd/katana"
-  install_go_tool "gospider"          "github.com/jaeles-project/gospider"
-  install_go_tool "hakrawler"         "github.com/hakluke/hakrawler"
-
-  # ── URL & Wayback Machine ──
-  install_go_tool "gau"               "github.com/lc/gau/v2/cmd/gau"
-  install_go_tool "waybackurls"       "github.com/tomnomnom/waybackurls"
-  install_go_tool "waymore"           "github.com/xnl-h4ck3r/waymore"
-  install_go_tool "galer"             "github.com/dwisiswant0/galer"
-
-  # ── DNS ──
-  install_go_tool "dnsx"              "github.com/projectdiscovery/dnsx/cmd/dnsx"
-  install_go_tool "puredns"           "github.com/d3mondev/puredns/v2"
-  install_go_tool "shuffledns"        "github.com/projectdiscovery/shuffledns/cmd/shuffledns"
-  install_go_tool "massdns"           "github.com/blechschmidt/massdns/cmd/massdns" 2>/dev/null || true
-
-  # ── Port & Network ──
-  install_go_tool "naabu"             "github.com/projectdiscovery/naabu/v2/cmd/naabu"
-  install_go_tool "tlsx"              "github.com/projectdiscovery/tlsx/cmd/tlsx"
-  install_go_tool "cdncheck"          "github.com/projectdiscovery/cdncheck/cmd/cdncheck"
-  install_go_tool "asnmap"            "github.com/projectdiscovery/asnmap/cmd/asnmap"
-  install_go_tool "cf-check"          "github.com/dwisiswant0/cf-check"
-
-  # ── Fuzzing & Scanning ──
-  install_go_tool "ffuf"              "github.com/ffuf/ffuf/v2"
-  install_go_tool "gobuster"          "github.com/OJ/gobuster/v3"
-  install_go_tool "nuclei"            "github.com/projectdiscovery/nuclei/v3/cmd/nuclei"
-  install_go_tool "interactsh-client" "github.com/projectdiscovery/interactsh/cmd/interactsh-client"
-
-  # ── Screenshots ──
-  install_go_tool "gowitness"         "github.com/sensepost/gowitness"
-
-  # ── XSS ──
-  install_go_tool "dalfox"            "github.com/hahwul/dalfox/v2"
-  install_go_tool "kxss"              "github.com/Emoe/kxss"
-  install_go_tool "Gxss"              "github.com/KathanP19/Gxss"
-  install_go_tool "bxss"              "github.com/ethicalhackingplayground/bxss"
-
-  # ── Subdomain Takeover ──
-  install_go_tool "subzy"             "github.com/PentestPad/subzy"
-  install_go_tool "dnstake"           "github.com/pwnesia/dnstake"
-  install_go_tool "subjack"           "github.com/haccer/subjack"
-
-  # ── OSINT ──
-  install_go_tool "github-subdomains" "github.com/gwen001/github-subdomains"
-  install_go_tool "socialhunter"      "github.com/utkusen/socialhunter"
-  install_go_tool "trufflehog"        "github.com/trufflesecurity/trufflehog/v3"
-
-  # ── Utilities ──
-  install_go_tool "anew"              "github.com/tomnomnom/anew"
-  install_go_tool "qsreplace"         "github.com/tomnomnom/qsreplace"
-  install_go_tool "gron"              "github.com/tomnomnom/gron"
-  install_go_tool "fff"               "github.com/tomnomnom/fff"
-  install_go_tool "unfurl"            "github.com/tomnomnom/unfurl"
-  install_go_tool "mapcidr"           "github.com/projectdiscovery/mapcidr/cmd/mapcidr"
-  install_go_tool "notify"            "github.com/projectdiscovery/notify/cmd/notify"
-  install_go_tool "cent"              "github.com/xm1k3/cent"
-  install_go_tool "subzy"             "github.com/PentestPad/subzy"
+  info "Reading tool list from ${BOLD}manifests/go-tools.txt${RESET}"
+  # Read name/module/version from the manifest (skip blanks & comments).
+  while read -r name module version _rest; do
+    [[ -z "${name:-}" || "${name:0:1}" == "#" ]] && continue
+    [[ -z "${module:-}" ]] && continue
+    install_go_tool "$name" "$module" "${version:-latest}"
+  done < "$GO_MANIFEST"
 }
 
 # ──────────────── FEROXBUSTER (Rust binary) ──────────────────
+# Pinned to FEROX_VERSION and verified against the GitHub-published
+# asset digest (sha256) — no more `releases/latest` / unverified binary.
 install_feroxbuster() {
-  section "Feroxbuster (Rust)"
+  section "Feroxbuster (Rust) — v$FEROX_VERSION"
   progress "feroxbuster"
-  if command -v feroxbuster &>/dev/null; then
-    done_skip; ((SKIP++)) || true; return 0
+  if command -v feroxbuster &>/dev/null && ! $FORCE; then
+    done_skip; ((SKIP++)) || true
+    record_lock "feroxbuster" "v$FEROX_VERSION"
+    return 0
   fi
-  local url
-  url=$(curl -fsSL "https://api.github.com/repos/epi052/feroxbuster/releases/latest" \
-        | jq -r '.assets[] | select(.name | test("linux-x86_64.zip")) | .browser_download_url')
+
+  local arch; arch=$(uname -m)
+  local target="x86_64"
+  [[ "$arch" == "aarch64" ]] && target="aarch64"
+  [[ "$arch" == "armv7l"  ]] && target="armv7"
+
+  # Query the PINNED release tag (not "latest") for the matching asset.
+  local meta asset_name url digest
+  meta=$(curl -fsSL "https://api.github.com/repos/epi052/feroxbuster/releases/tags/v${FEROX_VERSION}" 2>>"$LOG_FILE" || true)
+  asset_name=$(jq -r --arg t "$target" \
+    '.assets[] | select(.name | test($t) and test("linux") and endswith(".zip")) | .name' \
+    <<<"$meta" 2>/dev/null | head -n1)
+  url=$(jq -r --arg n "$asset_name" '.assets[] | select(.name==$n) | .browser_download_url' <<<"$meta" 2>/dev/null | head -n1)
+  digest=$(jq -r --arg n "$asset_name" '.assets[] | select(.name==$n) | .digest // empty' <<<"$meta" 2>/dev/null | head -n1)
+
+  if [[ -z "$url" || "$url" == "null" ]]; then
+    done_fail; error "Could not locate feroxbuster v$FEROX_VERSION asset for $target."; ((FAIL++)) || true; return 1
+  fi
+
   local tmp_dir; tmp_dir=$(mktemp -d)
-  if run_quiet curl -fsSL "$url" -o "$tmp_dir/feroxbuster.zip" && \
-     run_quiet unzip -q "$tmp_dir/feroxbuster.zip" -d "$tmp_dir" && \
+  if ! retry 3 curl -fsSL "$url" -o "$tmp_dir/feroxbuster.zip"; then
+    rm -rf "$tmp_dir"; done_fail; error "feroxbuster download failed."; ((FAIL++)) || true; return 1
+  fi
+
+  # Verify against GitHub's published digest (format: sha256:<hex>)
+  if [[ -n "$digest" && "$digest" == sha256:* ]]; then
+    local expected="${digest#sha256:}"
+    local actual; actual=$(sha256sum "$tmp_dir/feroxbuster.zip" | awk '{print $1}')
+    if [[ "$actual" != "$expected" ]]; then
+      done_fail
+      error "feroxbuster checksum MISMATCH — refusing to install."
+      error "  expected: $expected"
+      error "  actual:   $actual"
+      rm -rf "$tmp_dir"; ((FAIL++)) || true; return 1
+    fi
+    log "[OK] feroxbuster sha256 verified: $actual"
+  else
+    warn "No published digest for feroxbuster asset — proceeding without verification."
+  fi
+
+  if run_quiet unzip -q "$tmp_dir/feroxbuster.zip" -d "$tmp_dir" && \
      run_quiet mv "$tmp_dir/feroxbuster" /usr/local/bin/feroxbuster && \
      run_quiet chmod +x /usr/local/bin/feroxbuster; then
-    rm -rf "$tmp_dir"; done_ok; ((PASS++)) || true
+    rm -rf "$tmp_dir"; record_lock "feroxbuster" "v$FEROX_VERSION"; done_ok; ((PASS++)) || true
   else
     rm -rf "$tmp_dir"; done_fail; ((FAIL++)) || true
   fi
@@ -487,6 +601,27 @@ ALIASES
   success "Aliases installed → $ALIAS_FILE"
 }
 
+# ──────────────── HACKKIT LAUNCHER COMMAND ──────────────────
+# Installs the global `hackkit` command so the whole toolkit can
+# be started just by typing its name.
+install_launcher() {
+  section "HackKit Launcher Command"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local launcher="$SCRIPT_DIR/bin/hackkit"
+  progress "hackkit command"
+  if [[ ! -f "$launcher" ]]; then
+    done_fail; error "bin/hackkit not found — did you clone the full repo?"; return 1
+  fi
+  chmod +x "$launcher"
+  # Symlink into PATH; symlink is resolved by the launcher itself.
+  ln -sf "$launcher" /usr/local/bin/hackkit
+  # Record the repo location for the launcher to find scripts.
+  grep -q 'HACKKIT_HOME' "$ALIAS_FILE" 2>/dev/null || \
+    echo "export HACKKIT_HOME=\"$SCRIPT_DIR\"" >> "$ALIAS_FILE"
+  done_ok; ((PASS++)) || true
+  success "Launcher ready → type ${BOLD}hackkit${RESET} to start"
+}
+
 # ──────────────────── ZSH + Oh-My-Zsh ───────────────────────
 install_zsh() {
   section "ZSH + Oh-My-Zsh"
@@ -546,10 +681,27 @@ install_docker() {
   if command -v docker &>/dev/null; then
     done_skip; ((SKIP++)) || true; return 0
   fi
-  if run_quiet curl -fsSL https://get.docker.com | bash; then
-    run_quiet systemctl enable docker --quiet || true
-    run_quiet systemctl start  docker --quiet || true
+
+  # Prefer the distro's packaged docker.io (signed via apt) over a
+  # piped remote script. Fall back to the official script, but download
+  # it to disk first so it can be inspected/logged rather than run blind.
+  if run_quiet apt-get install -y docker.io && command -v docker &>/dev/null; then
+    run_quiet systemctl enable docker || true
+    run_quiet systemctl start  docker || true
     done_ok; ((PASS++)) || true
+    return 0
+  fi
+
+  local script="/tmp/get-docker-$$.sh"
+  if retry 3 curl -fsSL https://get.docker.com -o "$script"; then
+    log "[INFO] Fetched Docker install script to $script (run with: sh $script)"
+    if run_quiet sh "$script"; then
+      run_quiet systemctl enable docker || true
+      run_quiet systemctl start  docker || true
+      rm -f "$script"; done_ok; ((PASS++)) || true
+    else
+      rm -f "$script"; done_fail; ((FAIL++)) || true
+    fi
   else
     done_fail; ((FAIL++)) || true
   fi
@@ -577,7 +729,11 @@ print_summary() {
   echo -e "  ${BOLD}Tools dir   :${RESET} $TOOLS_DIR"
   echo -e "  ${BOLD}Wordlists   :${RESET} $WORDLISTS_DIR"
   echo -e "  ${BOLD}Python venv :${RESET} $PYTHON_VENV"
+  echo -e "  ${BOLD}Lock file   :${RESET} $LOCK_FILE  ${DIM}(resolved versions)${RESET}"
   echo -e "  ${BOLD}Log file    :${RESET} $LOG_FILE"
+  if [[ $FAIL -gt 0 ]]; then
+    echo -e "  ${DIM}Re-run just the failed steps with:  sudo bash install.sh --resume${RESET}"
+  fi
   echo ""
   if [[ $FAIL -gt 0 ]]; then
     warn "Some tools failed. See log: ${BOLD}$LOG_FILE${RESET}"
@@ -588,6 +744,9 @@ print_summary() {
   echo -e "${YELLOW}  ⚡ Run: ${BOLD}source $ALIAS_FILE${RESET}${YELLOW}  — to load aliases now${RESET}"
   echo -e "${YELLOW}  ⚡ Or open a new terminal session${RESET}"
   echo ""
+  echo -e "${GREEN}${BOLD}  ▶ Then just type:  hackkit${RESET}   ${DIM}(opens the control center)${RESET}"
+  echo -e "${DIM}     hackkit doctor   — verify everything installed${RESET}"
+  echo ""
   echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -597,25 +756,36 @@ main() {
   banner
   check_root
   detect_os
+  init_state
 
-  echo -e "${YELLOW}${BOLD}  This will install 80+ tools. Continue? [Y/n]:${RESET} \c"
-  read -r ans
-  [[ "${ans,,}" =~ ^(n|no)$ ]] && { echo "Aborted."; exit 0; }
+  if $RESUME; then
+    info "Resume mode: steps completed in a previous run will be skipped."
+  fi
+  if $FORCE; then
+    warn "Force mode: every step will be re-run."
+  fi
 
-  install_base_packages
-  install_go
-  setup_python_env
-  install_go_tools
-  install_feroxbuster
-  install_python_tools
-  setup_nuclei_templates
-  setup_wordlists
-  setup_resolvers
-  install_helpers
-  install_zsh
-  setup_tmux
-  install_docker
-  cleanup
+  if ! $ASSUME_YES; then
+    echo -e "${YELLOW}${BOLD}  This will install 80+ tools. Continue? [Y/n]:${RESET} \c"
+    read -r ans
+    [[ "${ans,,}" =~ ^(n|no)$ ]] && { echo "Aborted."; exit 0; }
+  fi
+
+  do_step "System Dependencies"   install_base_packages
+  do_step "Go Language Setup"     install_go
+  do_step "Python3 Environment"   setup_python_env
+  do_step "Go-Based Tools"        install_go_tools
+  do_step "Feroxbuster"           install_feroxbuster
+  do_step "Python Tools"          install_python_tools
+  do_step "Nuclei Templates"      setup_nuclei_templates
+  do_step "Wordlists"             setup_wordlists
+  do_step "DNS Resolvers"         setup_resolvers
+  do_step "Shell Aliases"         install_helpers
+  do_step "HackKit Launcher"      install_launcher
+  do_step "ZSH + Oh-My-Zsh"       install_zsh
+  do_step "Tmux Configuration"    setup_tmux
+  do_step "Docker"                install_docker
+  do_step "Cleanup"               cleanup
   print_summary
 }
 

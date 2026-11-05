@@ -10,6 +10,13 @@
 # ============================================================
 set -euo pipefail
 
+# ──────────────────────── CONFIG ─────────────────────────────
+# Docker Hub image to pull for option [d]. Pin to an immutable
+# digest for reproducible, tamper-evident pulls, e.g.:
+#   HACKKIT_IMAGE="gsodhi727/hackkit@sha256:<digest>"
+# Override at runtime:  HACKKIT_IMAGE=... bash setup.sh
+HACKKIT_IMAGE="${HACKKIT_IMAGE:-gsodhi727/hackkit:latest}"
+
 # ──────────────────────── COLOURS ────────────────────────────
 RED='\033[0;31m';   GREEN='\033[0;32m';  YELLOW='\033[1;33m'
 BLUE='\033[0;34m';  CYAN='\033[0;36m';   BOLD='\033[1m'
@@ -28,7 +35,7 @@ cat <<'EOF'
 
 EOF
 echo -e "${CYAN}${BOLD}  ┌──────────────────────────────────────────────────────────────┐${RESET}"
-echo -e "${CYAN}${BOLD}  │   Bug Bounty Toolkit  v2.0  ·  by gsodhi727                      │${RESET}"
+echo -e "${CYAN}${BOLD}  │   Bug Bounty Toolkit  v2.1  ·  by gsodhi727                      │${RESET}"
 echo -e "${CYAN}${BOLD}  │   github.com/gsodhi727/hackkit    ·  80+ tools ready              │${RESET}"
 echo -e "${CYAN}${BOLD}  └──────────────────────────────────────────────────────────────┘${RESET}"
 echo ""
@@ -172,8 +179,13 @@ docker_install() {
       docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm hackkit
       ;;
     d)
-      echo -e "${BLUE}  [*] Pulling gsodhi727/hackkit from Docker Hub...${RESET}"
-      if docker pull gsodhi727/hackkit:latest; then
+      echo -e "${BLUE}  [*] Pulling ${HACKKIT_IMAGE} from Docker Hub...${RESET}"
+      case "$HACKKIT_IMAGE" in
+        *@sha256:*) echo -e "  ${GREEN}✓ digest-pinned (reproducible/tamper-evident)${RESET}" ;;
+        *) echo -e "  ${YELLOW}⚠ tag is mutable — pin a digest for reproducible pulls:${RESET}"
+           echo -e "  ${DIM}    HACKKIT_IMAGE=gsodhi727/hackkit@sha256:<digest> bash setup.sh${RESET}" ;;
+      esac
+      if docker pull "$HACKKIT_IMAGE"; then
         echo ""
         echo -e "${GREEN}  [✓] Image pulled. Launching shell...${RESET}"
         echo ""
@@ -183,7 +195,7 @@ docker_install() {
           --cap-add NET_ADMIN \
           --network host \
           -v "$SCRIPT_DIR/workspace:/root/workspace" \
-          gsodhi727/hackkit:latest
+          "$HACKKIT_IMAGE"
       else
         echo -e "${YELLOW}  [!] Pull failed (image may not be published yet).${RESET}"
         echo -e "  Falling back to local build..."
