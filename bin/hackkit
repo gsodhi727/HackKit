@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# ============================================================
+#  HackKit — Control Center / Launcher
+#  Version : 2.1.0
+#  Author  : gsodhi727  (github.com/gsodhi727/hackkit)
+#  License : MIT
+#
+#  After installation, just type:  hackkit
+#  ...to open the interactive menu, or use subcommands:
+#
+#    hackkit recon  -d target.com
+#    hackkit fuzz   -u https://target.com
+#    hackkit xss    -d target.com
+#    hackkit doctor            # health-check installed tools
+#    hackkit tools             # list installed tools
+#    hackkit update            # update tools + templates
+#    hackkit version | help
+# ============================================================
+set -uo pipefail
+
+# ──────────────────────── COLOURS ────────────────────────────
+RED='\033[0;31m';  GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m';  BOLD='\033[1m'
+DIM='\033[2m';     RESET='\033[0m'
+
+HACKKIT_VERSION="2.1.0"
+
+# ──────────────── LOCATE THE REPO / SCRIPTS ──────────────────
+# Resolve where HackKit lives so the launcher works whether it's
+# run from /usr/local/bin (symlink), /opt/hackkit, or a clone.
+resolve_home() {
+  if [[ -n "${HACKKIT_HOME:-}" && -d "$HACKKIT_HOME/scripts" ]]; then
+    echo "$HACKKIT_HOME"; return
+  fi
+  local src="${BASH_SOURCE[0]}"
+  while [[ -h "$src" ]]; do
+    local dir; dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  local bindir; bindir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+  local root; root="$(cd "$bindir/.." >/dev/null 2>&1 && pwd)"
+  if [[ -d "$root/scripts" ]]; then echo "$root"; return; fi
+  for cand in /opt/hackkit "$HOME/hackkit" "$HOME/tools/hackkit"; do
+    [[ -d "$cand/scripts" ]] && { echo "$cand"; return; }
+  done
+  echo "$root"
+}
+
+HOME_DIR="$(resolve_home)"
+SCRIPTS="$HOME_DIR/scripts"
+WORDLISTS_DIR="${WORDLISTS:-$HOME/wordlists}"
+TOOLS_DIR="${TOOLS:-$HOME/tools}"
+VENV="${HACKKIT_VENV:-$HOME/.hackkit-venv}"
+
+# ──────────────────────── BANNER ─────────────────────────────
+banner() {
+cat <<'EOF'
+
+  ██╗  ██╗ █████╗  ██████╗██╗  ██╗██╗  ██╗██╗████████╗
+  ██║  ██║██╔══██╗██╔════╝██║ ██╔╝██║ ██╔╝██║╚══██╔══╝
+  ███████║███████║██║     █████╔╝ █████╔╝ ██║   ██║
+  ██╔══██║██╔══██║██║     ██╔═██╗ ██╔═██╗ ██║   ██║
+  ██║  ██║██║  ██║╚██████╗██║  ██╗██║  ██╗██║   ██║
+  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝   ╚═╝
+
+EOF
+  echo -e "${CYAN}${BOLD}  Control Center  v${HACKKIT_VERSION}  ·  by gsodhi727${RESET}"
+  echo -e "${DIM}  home: $HOME_DIR${RESET}"
+  echo ""
+}
+
+info()  { echo -e "${BLUE}[*]${RESET} $*"; }
+ok()    { echo -e "${GREEN}[✓]${RESET} $*"; }
+warn()  { echo -e "${YELLOW}[!]${RESET} $*"; }
+err()   { echo -e "${RED}[✗]${RESET} $*"; }
+
+require_script() {
+  local s="$1"
+  if [[ ! -f "$s" ]]; then
+    err "Script not found: $s"
+    warn "Is HackKit installed? Set HACKKIT_HOME or reinstall with: sudo bash install.sh"
+    exit 1
+  fi
+}
+
+# ──────────────── SUBCOMMAND: recon/fuzz/xss ─────────────────
+cmd_recon() { require_script "$SCRIPTS/recon/recon.sh";          bash "$SCRIPTS/recon/recon.sh" "$@"; }
+cmd_fuzz()  { require_script "$SCRIPTS/fuzzing/fuzz.sh";          bash "$SCRIPTS/fuzzing/fuzz.sh" "$@"; }
+cmd_xss()   { require_script "$SCRIPTS/exploitation/xss-hunt.sh"; bash "$SCRIPTS/exploitation/xss-hunt.sh" "$@"; }
+cmd_update(){ require_script "$SCRIPTS/utilities/update.sh";      bash "$SCRIPTS/utilities/update.sh" "$@"; }
+
+# ──────────────── SUBCOMMAND: tools ──────────────────────────
+cmd_tools() {
+  echo -e "${CYAN}${BOLD}Go / binary tools dir:${RESET} ${GOPATH:-$HOME/go}/bin"
+  ls "${GOPATH:-$HOME/go}/bin" 2>/dev/null | column 2>/dev/null || ls "${GOPATH:-$HOME/go}/bin" 2>/dev/null
+  echo ""
+  echo -e "${CYAN}${BOLD}Python tools dir:${RESET} $TOOLS_DIR"
+  ls "$TOOLS_DIR" 2>/dev/null || warn "No Python tools dir yet."
+}
+
+# ──────────────── SUBCOMMAND: doctor ─────────────────────────
+# Health-check: verify the core tools are actually on PATH.
+cmd_doctor() {
+  banner
+  echo -e "${CYAN}${BOLD}  ▸ Environment health check${RESET}\n"
+
+  local present=0 missing=0
+  check() {
+    local t="$1"
+    if command -v "$t" &>/dev/null; then
+      printf "  ${GREEN}[✓]${RESET} %-18s ${DIM}%s${RESET}\n" "$t" "$(command -v "$t")"
+      ((present++)) || true
+    else
+      printf "  ${RED}[✗]${RESET} %-18s ${DIM}not found${RESET}\n" "$t"
+      ((missing++)) || true
+    fi
+  }
+
+  echo -e "${BOLD}  Core runtimes${RESET}"
+  for t in go python3 git curl jq; do check "$t"; done
+
+  echo -e "\n${BOLD}  Recon${RESET}"
+  for t in subfinder assetfinder amass httpx dnsx naabu katana gau waybackurls; do check "$t"; done
+
+  echo -e "\n${BOLD}  Fuzzing / scanning${RESET}"
+  for t in ffuf feroxbuster gobuster nuclei dalfox; do check "$t"; done
+
+  echo -e "\n${BOLD}  Utilities${RESET}"
+  for t in anew qsreplace unfurl notify gowitness; do check "$t"; done
+
+  echo -e "\n${BOLD}  Data${RESET}"
+  [[ -d "$WORDLISTS_DIR/SecLists" ]] && ok "SecLists present → $WORDLISTS_DIR/SecLists" || err "SecLists missing (expected $WORDLISTS_DIR/SecLists)"
+  [[ -f "$WORDLISTS_DIR/resolvers.txt" ]] && ok "resolvers.txt present" || warn "resolvers.txt missing"
+  [[ -d "$HOME/nuclei-templates" ]] && ok "nuclei-templates present" || warn "nuclei-templates missing (run: hackkit update)"
+  [[ -d "$VENV" ]] && ok "Python venv → $VENV" || warn "Python venv missing ($VENV)"
+
+  echo ""
+  echo -e "${CYAN}${BOLD}  ────────────────────────────────────────────${RESET}"
+  echo -e "  ${GREEN}present: $present${RESET}   ${RED}missing: $missing${RESET}"
+  if (( missing > 0 )); then
+    warn "Some tools are missing. Try:  ${BOLD}hackkit update${RESET}  or re-run the installer."
+    warn "If tools are installed but 'not found', your PATH may be missing \$GOPATH/bin — open a new shell."
+  else
+    ok "All core tools present. Happy (authorized) hunting! 🎯"
+  fi
+}
+
+# ──────────────── SUBCOMMAND: help / version ─────────────────
+cmd_version() { echo "hackkit v${HACKKIT_VERSION}"; }
+
+cmd_help() {
+  banner
+  echo -e "$(cat <<HELP
+  ${BOLD}USAGE${RESET}
+    hackkit                      Open the interactive menu
+    hackkit <command> [args]     Run a command directly
+
+  ${BOLD}COMMANDS${RESET}
+    recon   -d <domain>          Full recon pipeline (subs → alive → urls → nuclei)
+    fuzz    -u <url> [-m mode]   Content/vhost/param fuzzing
+    xss     -d <domain>          XSS hunting pipeline
+    doctor                       Verify installed tools & data (health check)
+    tools                        List installed tools
+    update                       Update tools + nuclei templates
+    version                      Print version
+    help                         Show this help
+
+  ${BOLD}EXAMPLES${RESET}
+    hackkit recon -d example.com -o out/
+    hackkit fuzz  -u https://example.com -m dir
+    hackkit xss   -d example.com -b https://cb.example.net
+    hackkit doctor
+
+  ${DIM}Only test assets you are explicitly authorized to test.${RESET}
+HELP
+)"
+}
+
+# ──────────────── INTERACTIVE MENU ───────────────────────────
+interactive_menu() {
+  banner
+  echo -e "${BOLD}  What would you like to do?${RESET}\n"
+  echo -e "  ${GREEN}${BOLD}[1]${RESET}  Recon pipeline        ${DIM}subfinder → httpx → gau → nuclei${RESET}"
+  echo -e "  ${GREEN}${BOLD}[2]${RESET}  Fuzzing               ${DIM}directories / vhosts / parameters${RESET}"
+  echo -e "  ${GREEN}${BOLD}[3]${RESET}  XSS hunt              ${DIM}gather → filter → dalfox${RESET}"
+  echo -e "  ${BLUE}${BOLD}[4]${RESET}  Doctor (health check) ${DIM}verify tools are installed${RESET}"
+  echo -e "  ${BLUE}${BOLD}[5]${RESET}  List installed tools"
+  echo -e "  ${YELLOW}${BOLD}[6]${RESET}  Update tools & templates"
+  echo -e "  ${CYAN}${BOLD}[h]${RESET}  Help        ${DIM}[q] Quit${RESET}\n"
+  echo -ne "${CYAN}${BOLD}  Choice: ${RESET}"
+  read -r choice
+  echo ""
+  case "${choice,,}" in
+    1) read -rp "  Target domain: " d; [[ -n "$d" ]] && cmd_recon -d "$d" || err "No domain given." ;;
+    2) read -rp "  Target URL: " u
+       read -rp "  Mode [dir/vhost/param] (default dir): " m
+       [[ -n "$u" ]] && cmd_fuzz -u "$u" -m "${m:-dir}" || err "No URL given." ;;
+    3) read -rp "  Target domain: " d; [[ -n "$d" ]] && cmd_xss -d "$d" || err "No domain given." ;;
+    4) cmd_doctor ;;
+    5) cmd_tools ;;
+    6) cmd_update ;;
+    h|help) cmd_help ;;
+    q|quit|exit) echo -e "${DIM}  Bye!${RESET}" ;;
+    *) err "Invalid choice: $choice" ;;
+  esac
+}
+
+# ──────────────────────── DISPATCH ───────────────────────────
+main() {
+  local cmd="${1:-}"
+  [[ $# -gt 0 ]] && shift || true
+  case "$cmd" in
+    ""|menu)          interactive_menu ;;
+    recon)            cmd_recon  "$@" ;;
+    fuzz)             cmd_fuzz   "$@" ;;
+    xss)              cmd_xss    "$@" ;;
+    update|up)        cmd_update "$@" ;;
+    tools|ls)         cmd_tools ;;
+    doctor|check|dr)  cmd_doctor ;;
+    version|-v|--version) cmd_version ;;
+    help|-h|--help)   cmd_help ;;
+    *) err "Unknown command: $cmd"; echo ""; cmd_help; exit 1 ;;
+  esac
+}
+
+main "$@"

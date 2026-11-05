@@ -182,7 +182,12 @@ RUN nuclei -update-templates -silent 2>/dev/null || true
 # ─────────────────────────────────────────────────────────────
 COPY install.sh /opt/hackkit/
 COPY scripts/ /opt/hackkit/scripts/
+COPY bin/ /opt/hackkit/bin/
 RUN chmod +x /opt/hackkit/install.sh && find /opt/hackkit/scripts -type f -name "*.sh" -exec chmod +x {} +
+
+# ── Global `hackkit` launcher command ────────────────────────
+ENV HACKKIT_HOME=/opt/hackkit
+RUN chmod +x /opt/hackkit/bin/hackkit && ln -sf /opt/hackkit/bin/hackkit /usr/local/bin/hackkit
 
 # ── 15. Container Aliases & Tmux ──
 COPY docker/hackkit.sh /etc/profile.d/hackkit.sh
@@ -214,8 +219,11 @@ RUN cat > /etc/motd <<'MOTD'
   ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝   ╚═╝
 
   Bug Bounty Toolkit  ·  by gsodhi727  ·  github.com/gsodhi727/hackkit
+
+  ▶ Type 'hackkit' to open the control center.
+    hackkit doctor            — verify tools are installed
+    hackkit recon -d target.com   — run the recon pipeline
   Type 'tools' to list tool dirs, 'wl' to list wordlists.
-  Run 'bash /opt/hackkit/scripts/recon/recon.sh -d target.com' to start!
 
 MOTD
 

@@ -49,6 +49,35 @@ The **`setup.sh`** launcher presents an interactive menu:
 
 ---
 
+## 🎛️ The `hackkit` Command — start it by name
+
+Once installed (direct **or** Docker), the whole toolkit is launched just by
+typing its name:
+
+```bash
+hackkit
+```
+
+This opens the **Control Center** — an interactive menu that drives every
+pipeline (recon, fuzzing, XSS), checks your install, lists tools, and updates
+templates. You can also call any action directly:
+
+```bash
+hackkit recon  -d target.com        # full recon pipeline
+hackkit fuzz   -u https://target.com -m dir
+hackkit xss    -d target.com
+hackkit doctor                      # ✅ health-check: is everything installed & on PATH?
+hackkit tools                       # list installed tools
+hackkit update                      # update tools + nuclei templates
+hackkit help
+```
+
+> **Tip:** run `hackkit doctor` right after installing. It verifies the core
+> tools resolve on your `PATH`, confirms SecLists / resolvers / nuclei-templates
+> are present, and tells you exactly what to fix if something is missing.
+
+---
+
 ## 🖥️ Method 1 — Direct Install (VPS / Linux)
 
 Install all 80+ tools natively on your system.  
@@ -291,6 +320,9 @@ Your **`workspace/`** folder is bind-mounted from the host, so all recon results
 
 ## 🚀 Automation Scripts
 
+> The easiest entry point is the **`hackkit`** command (see above). The raw
+> scripts below are what it calls under the hood, and can still be run directly.
+
 ```bash
 # Full recon pipeline
 bash scripts/recon/recon.sh -d target.com
@@ -345,6 +377,8 @@ wl            # list wordlists
 hackkit/
 ├── setup.sh             ← ⭐ Start here — smart menu launcher
 ├── install.sh           ← Direct installer (Method 1)
+├── bin/
+│   └── hackkit          ← 🎛️ Global command — `hackkit` opens the Control Center
 ├── Dockerfile           ← Docker image definition (Method 2)
 ├── docker-compose.yml   ← Docker Compose with volumes
 ├── requirements.txt     ← Python dependencies

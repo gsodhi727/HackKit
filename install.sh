@@ -487,6 +487,27 @@ ALIASES
   success "Aliases installed → $ALIAS_FILE"
 }
 
+# ──────────────── HACKKIT LAUNCHER COMMAND ──────────────────
+# Installs the global `hackkit` command so the whole toolkit can
+# be started just by typing its name.
+install_launcher() {
+  section "HackKit Launcher Command"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local launcher="$SCRIPT_DIR/bin/hackkit"
+  progress "hackkit command"
+  if [[ ! -f "$launcher" ]]; then
+    done_fail; error "bin/hackkit not found — did you clone the full repo?"; return 1
+  fi
+  chmod +x "$launcher"
+  # Symlink into PATH; symlink is resolved by the launcher itself.
+  ln -sf "$launcher" /usr/local/bin/hackkit
+  # Record the repo location for the launcher to find scripts.
+  grep -q 'HACKKIT_HOME' "$ALIAS_FILE" 2>/dev/null || \
+    echo "export HACKKIT_HOME=\"$SCRIPT_DIR\"" >> "$ALIAS_FILE"
+  done_ok; ((PASS++)) || true
+  success "Launcher ready → type ${BOLD}hackkit${RESET} to start"
+}
+
 # ──────────────────── ZSH + Oh-My-Zsh ───────────────────────
 install_zsh() {
   section "ZSH + Oh-My-Zsh"
@@ -588,6 +609,9 @@ print_summary() {
   echo -e "${YELLOW}  ⚡ Run: ${BOLD}source $ALIAS_FILE${RESET}${YELLOW}  — to load aliases now${RESET}"
   echo -e "${YELLOW}  ⚡ Or open a new terminal session${RESET}"
   echo ""
+  echo -e "${GREEN}${BOLD}  ▶ Then just type:  hackkit${RESET}   ${DIM}(opens the control center)${RESET}"
+  echo -e "${DIM}     hackkit doctor   — verify everything installed${RESET}"
+  echo ""
   echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 }
 
@@ -612,6 +636,7 @@ main() {
   setup_wordlists
   setup_resolvers
   install_helpers
+  install_launcher
   install_zsh
   setup_tmux
   install_docker

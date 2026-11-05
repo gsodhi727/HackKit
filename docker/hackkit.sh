@@ -29,7 +29,10 @@ alias ferox-dir='feroxbuster -u'
 alias nuclei-fast='nuclei -severity critical,high -silent'
 alias nuclei-all='nuclei -severity critical,high,medium,low -silent'
 
-# ── Script shortcuts ───────────────────────────────────────────
+# ── HackKit launcher ───────────────────────────────────────────
+export HACKKIT_HOME="/opt/hackkit"
+# `hackkit` is a real command on PATH (/usr/local/bin/hackkit);
+# these aliases remain for direct access to individual pipelines.
 alias recon='bash /opt/hackkit/scripts/recon/recon.sh'
 alias xss='bash /opt/hackkit/scripts/exploitation/xss-hunt.sh'
 alias fuzz='bash /opt/hackkit/scripts/fuzzing/fuzz.sh'
