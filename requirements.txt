@@ -1,16 +1,25 @@
-wafw00f
+# HackKit — Python packages installed into the HackKit venv
+# (install.sh, Dockerfile and update.sh all use this file)
+
+# Tools with a CLI entry point
 arjun
 uro
-jsbeautifier
+wafw00f
+waymore
 holehe
-sherlock
+# The PyPI package named "sherlock" is an unrelated lock library;
+# the username-OSINT tool is published as "sherlock-project".
+sherlock-project
 dnsdumpster
+
+# Libraries used by tools and ad-hoc scripts
 requests
 httpx
 aiohttp
 dnspython
 beautifulsoup4
 lxml
+jsbeautifier
 colorama
 tabulate
 tqdm

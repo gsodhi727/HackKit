@@ -1,0 +1,55 @@
+# ============================================================
+#  HackKit — Go tools (single source of truth)
+#  Used by: install.sh, Dockerfile, scripts/utilities/update.sh
+#  Format : <binary-name> <go-package-path>   (installed with @latest)
+#
+#  Notes:
+#   - massdns is C, not Go  → built from source by bootstrap.sh
+#   - waymore is Python     → installed from requirements.txt
+#   - crobat removed        → its Sonar backend no longer exists
+# ============================================================
+subfinder            github.com/projectdiscovery/subfinder/v2/cmd/subfinder
+assetfinder          github.com/tomnomnom/assetfinder
+amass                github.com/owasp-amass/amass/v4/...
+chaos                github.com/projectdiscovery/chaos-client/cmd/chaos
+gotator              github.com/Josue87/gotator
+alterx               github.com/projectdiscovery/alterx/cmd/alterx
+httpx                github.com/projectdiscovery/httpx/cmd/httpx
+httprobe             github.com/tomnomnom/httprobe
+katana               github.com/projectdiscovery/katana/cmd/katana
+gospider             github.com/jaeles-project/gospider
+hakrawler            github.com/hakluke/hakrawler
+gau                  github.com/lc/gau/v2/cmd/gau
+waybackurls          github.com/tomnomnom/waybackurls
+galer                github.com/dwisiswant0/galer
+dnsx                 github.com/projectdiscovery/dnsx/cmd/dnsx
+puredns              github.com/d3mondev/puredns/v2
+shuffledns           github.com/projectdiscovery/shuffledns/cmd/shuffledns
+naabu                github.com/projectdiscovery/naabu/v2/cmd/naabu
+tlsx                 github.com/projectdiscovery/tlsx/cmd/tlsx
+cdncheck             github.com/projectdiscovery/cdncheck/cmd/cdncheck
+asnmap               github.com/projectdiscovery/asnmap/cmd/asnmap
+cf-check             github.com/dwisiswant0/cf-check
+ffuf                 github.com/ffuf/ffuf/v2
+gobuster             github.com/OJ/gobuster/v3
+nuclei               github.com/projectdiscovery/nuclei/v3/cmd/nuclei
+interactsh-client    github.com/projectdiscovery/interactsh/cmd/interactsh-client
+gowitness            github.com/sensepost/gowitness
+dalfox               github.com/hahwul/dalfox/v2
+kxss                 github.com/Emoe/kxss
+Gxss                 github.com/KathanP19/Gxss
+bxss                 github.com/ethicalhackingplayground/bxss
+subzy                github.com/PentestPad/subzy
+dnstake              github.com/pwnesia/dnstake
+subjack              github.com/haccer/subjack
+github-subdomains    github.com/gwen001/github-subdomains
+socialhunter         github.com/utkusen/socialhunter
+trufflehog           github.com/trufflesecurity/trufflehog/v3
+anew                 github.com/tomnomnom/anew
+qsreplace            github.com/tomnomnom/qsreplace
+gron                 github.com/tomnomnom/gron
+fff                  github.com/tomnomnom/fff
+unfurl               github.com/tomnomnom/unfurl
+mapcidr              github.com/projectdiscovery/mapcidr/cmd/mapcidr
+notify               github.com/projectdiscovery/notify/cmd/notify
+cent                 github.com/xm1k3/cent

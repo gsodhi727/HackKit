@@ -1,11 +1,12 @@
-version: "3.9"
-
 # ============================================================
 #  HackKit — Docker Compose
 #  Usage:
-#    docker compose run --rm hackkit           # interactive shell
-#    docker compose run --rm hackkit scripts/recon/recon.sh     # run recon.sh
-#    docker compose run --rm hackkit scripts/exploitation/xss-hunt.sh       # run xss-hunt.sh
+#    docker compose run --rm hackkit                              # interactive shell
+#    docker compose run --rm hackkit recon -d target.com          # recon pipeline
+#    docker compose run --rm hackkit xss -d target.com            # XSS pipeline
+#    docker compose run --rm hackkit fuzz -u https://target.com   # fuzzer
+#    docker compose run --rm hackkit scripts/recon/recon.sh -d target.com
+#  Results land in ./workspace on the host.
 # ============================================================
 
 services:
@@ -14,7 +15,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: hackkit
     hostname: hackkit
 
     # ── Interactive terminal ───────────────────────────────────
@@ -22,23 +22,21 @@ services:
     tty: true
 
     # ── Shared volumes ────────────────────────────────────────
+    # Only data is persisted. Go binaries and Python tools are NOT put in
+    # volumes any more: a named volume keeps its first contents forever,
+    # so after rebuilding the image you'd still get the old tools.
     volumes:
-      # Your target workspace (create this folder on your host)
+      # Your target workspace (results are written here)
       - ./workspace:/root/workspace
-
-      # Persist wordlists so they survive container restarts
+      # Large wordlists — survive container restarts
       - hackkit-wordlists:/root/wordlists
-
-      # Persist Go tool binaries
-      - hackkit-gobin:/root/go/bin
-
-      # Persist Python tools
-      - hackkit-tools:/root/tools
-
-      # Persist nuclei templates
+      # Nuclei templates — updated in place by `update`
       - hackkit-nuclei:/root/nuclei-templates
 
-    # ── Network: host mode gives tools full network access ────
+    # ── Network ──────────────────────────────────────────────
+    # Host mode lets scanners (naabu, nmap, masscan) see the host's network
+    # directly. It also removes Docker's network isolation for this container,
+    # so only run trusted tools / targets you're authorised to test.
     network_mode: host
 
     # ── Capabilities needed for raw sockets (nmap, masscan) ──
@@ -47,16 +45,15 @@ services:
       - NET_RAW
 
     # ── Environment ───────────────────────────────────────────
+    # API keys (e.g. PDCP_API_KEY for chaos, SHODAN_API_KEY) go in a
+    # git-ignored .env file next to this one — never in the repo.
+    env_file:
+      - path: .env
+        required: false
     environment:
       - TERM=xterm-256color
-      - LANG=en_US.UTF-8
+      - LANG=C.UTF-8
 
-    # ── Default entrypoint (override with 'command') ──────────
-    entrypoint: ["/bin/bash", "-c", "cat /etc/motd; exec zsh -l"]
-
-# ──────────────── Named volumes ───────────────────────────────
 volumes:
   hackkit-wordlists:
-  hackkit-gobin:
-  hackkit-tools:
   hackkit-nuclei:

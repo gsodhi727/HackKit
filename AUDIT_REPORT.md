@@ -275,3 +275,20 @@ HackKit/
 
 ### Production Readiness: 3 / 10
 * **Reasoning**: While HackKit is a great personal toolkit for bug bounty hunters looking for a quick terminal environment, its security risks and fragile code execution model make it unsuitable for corporate DevSecOps environments or continuous pipeline scanning.
+
+---
+
+## ✅ REMEDIATION STATUS (follow-up)
+
+| Finding | Status |
+|---|---|
+| 1. Hardcoded GitHub PAT in `push.sh` | `push.sh` is not in the repo and the token is redacted in history. **Make sure the token itself was revoked on GitHub.** |
+| 2. `git config --global http.sslVerify false` | Gone together with `push.sh`. |
+| 3. `curl https://get.docker.com \| bash` | Fixed — `setup.sh` / `install.sh` install the distro-signed `docker.io` package. (In `install.sh` the pipe also sent the script to the log file, so Docker was never actually installed while the step reported success.) Oh-My-Zsh in the Dockerfile is now `git clone`d instead of piping a remote script into `sh`. |
+| 4. Unvalidated script input | Fixed — `scripts/lib/common.sh` validates domains, URLs and thread counts; flags without a value are rejected. Covered by `tests/smoke.sh`. |
+| Silent `2>/dev/null \|\| true` failures | Fixed — each tool's stderr goes to `<output>/logs/<tool>.log` and failures are printed as warnings. Installers print DONE/SKIP/FAIL per tool and list what failed. |
+| Install logic duplicated 3× (install.sh / Dockerfile / update.sh) | Fixed — `config/go-tools.txt`, `config/python-repos.txt`, `requirements.txt` + `scripts/lib/bootstrap.sh`. |
+| No CI | Added `.github/workflows/ci.yml`: ShellCheck, hadolint, compose validation, offline smoke tests, image build when image files change. |
+| Secrets management | `.env.example` + `.env` loaded by docker compose (git-ignored). |
+
+Other bugs fixed during the follow-up: `recon.sh` fed httpx's decorated output to nuclei/katana/gowitness; `xss-hunt.sh` exited when no URL had parameters; `fuzz.sh` called a non-existent `arjun.py`; `massdns` (needed by `puredns`) and `waymore` were installed with `go install` and always failed; feroxbuster was always the x86_64 build (wrong on arm64) and was looked up through the rate-limited GitHub API; pip `sherlock` is an unrelated package (`sherlock-project` is the tool); the container entrypoint ignored arguments; compose volumes hid updated tool binaries; `install.sh` aborted on the first failing `pip install -r` and counted failed downloads as successes.
