@@ -1,6 +1,7 @@
 # ⚡ HackKit — Bug Bounty Toolkit Installer
 
 <p align="center">
+  <a href="https://github.com/gsodhi727/hackkit/actions/workflows/ci.yml"><img src="https://github.com/gsodhi727/hackkit/actions/workflows/ci.yml/badge.svg"/></a>
   <img src="https://img.shields.io/badge/Tools-80%2B-blueviolet?style=for-the-badge&logo=linux"/>
   <img src="https://img.shields.io/badge/Platform-Debian%20%7C%20Ubuntu%20%7C%20Kali-orange?style=for-the-badge&logo=ubuntu"/>
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker"/>
@@ -69,12 +70,37 @@ hackkit xss    -d target.com
 hackkit doctor                      # ✅ health-check: is everything installed & on PATH?
 hackkit tools                       # list installed tools
 hackkit update                      # update tools + nuclei templates
+hackkit config set GITHUB_TOKEN ghp_xxx   # manage API keys/tokens (see below)
+hackkit workspace target.com        # scaffold a per-target results folder
+hackkit freeze                      # pin installed tool versions into the manifest
+hackkit completion bash             # shell completion (source it from ~/.bashrc)
 hackkit help
 ```
 
 > **Tip:** run `hackkit doctor` right after installing. It verifies the core
 > tools resolve on your `PATH`, confirms SecLists / resolvers / nuclei-templates
 > are present, and tells you exactly what to fix if something is missing.
+
+### 🔑 API keys (`hackkit config`)
+
+Several tools (subfinder, chaos, github-subdomains, …) are far more effective
+with API keys. Store them once — they're saved to `~/.hackkit/config.env`
+(`chmod 600`), exported to every pipeline, and synced into subfinder's
+`provider-config.yaml` automatically:
+
+```bash
+hackkit config set GITHUB_TOKEN   ghp_xxx
+hackkit config set CHAOS_KEY      xxxxxxxx
+hackkit config set SHODAN_API_KEY xxxxxxxx
+hackkit config list               # values are masked
+```
+
+### 🗂️ Workspaces (`hackkit workspace`)
+
+```bash
+hackkit workspace acme.com
+# → ./workspaces/acme.com/{recon,fuzzing,xss,scans,screenshots,loot}/ + notes.md
+```
 
 ---
 
@@ -97,8 +123,15 @@ When the menu appears, press **`1`** then Enter.
 ### Or run the installer directly
 
 ```bash
-sudo bash install.sh
+sudo bash install.sh            # interactive
+sudo bash install.sh -y         # no prompt
+sudo bash install.sh --resume   # re-run, skipping steps that already succeeded
+sudo bash install.sh --force    # re-run every step from scratch
 ```
+
+> The installer is **idempotent**: already-installed tools are skipped, network
+> steps are retried with backoff, and a step that had failures is *not* marked
+> complete — so `--resume` picks up exactly where a flaky run left off.
 
 ### What it does
 
@@ -379,6 +412,8 @@ hackkit/
 ├── install.sh           ← Direct installer (Method 1)
 ├── bin/
 │   └── hackkit          ← 🎛️ Global command — `hackkit` opens the Control Center
+├── manifests/
+│   └── go-tools.txt     ← 📌 Pinnable list of Go tools (source of truth)
 ├── Dockerfile           ← Docker image definition (Method 2)
 ├── docker-compose.yml   ← Docker Compose with volumes
 ├── requirements.txt     ← Python dependencies
@@ -390,7 +425,36 @@ hackkit/
 ├── docker/
 │   ├── hackkit.sh       ← Aliases for container sessions
 │   └── .tmux.conf       ← Tmux config
+├── .github/workflows/   ← CI: ShellCheck, bash -n, Dockerfile lint, smoke test
 └── workspace/           ← Your results (git-ignored)
+```
+
+---
+
+## 🔒 Reproducible & Verified Installs
+
+HackKit aims for installs you can trust and repeat:
+
+| Concern | How it's handled |
+|---------|------------------|
+| **Go toolchain** | Pinned `GO_VERSION`, downloaded tarball **verified against go.dev's published SHA256** (fails closed on mismatch) |
+| **Feroxbuster** | Pinned `FEROX_VERSION`, downloaded from the exact release tag and **verified against GitHub's published asset digest** |
+| **Go tools** | Declared in `manifests/go-tools.txt` — set `latest` or pin a tag per tool |
+| **Lockfile** | Resolved versions are written to `~/.hackkit/tools.lock` after install |
+| **Freeze** | `hackkit freeze` writes the locked versions back into the manifest, so another machine reproduces your exact toolset |
+| **Docker image** | `setup.sh` pull supports a digest pin: `HACKKIT_IMAGE=gsodhi727/hackkit@sha256:<digest> bash setup.sh` |
+| **Docker engine** | Prefers the distro's signed `docker.io` package; the official script is downloaded to disk before running, not piped blind into a shell |
+| **Flaky networks** | Downloads/clones retry with exponential backoff; `--resume` re-runs only the steps that didn't fully succeed |
+
+**Reproduce a known-good toolset elsewhere:**
+
+```bash
+# machine A — after a good install:
+hackkit freeze          # pins current versions into manifests/go-tools.txt
+git commit -am "pin toolset"
+
+# machine B:
+sudo bash install.sh    # installs the exact pinned versions
 ```
 
 ---

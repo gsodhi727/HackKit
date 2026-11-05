@@ -27,4 +27,5 @@ recon-*/
 xss-*/
 fuzz-*/
 workspace/
+workspaces/
 *.txt.bak

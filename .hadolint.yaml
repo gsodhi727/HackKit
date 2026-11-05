@@ -1,0 +1,7 @@
+# Hadolint config for HackKit's Dockerfile
+ignored:
+  - DL3008  # pin apt versions — impractical across Debian/Ubuntu/Kali bases
+  - DL3013  # pin pip versions — tools track upstream here
+  - DL3059  # multiple consecutive RUN — kept for readability
+  - DL4006  # SHELL -o pipefail — base image shell is fine for our use
+failure-threshold: warning

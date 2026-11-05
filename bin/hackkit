@@ -53,6 +53,16 @@ WORDLISTS_DIR="${WORDLISTS:-$HOME/wordlists}"
 TOOLS_DIR="${TOOLS:-$HOME/tools}"
 VENV="${HACKKIT_VENV:-$HOME/.hackkit-venv}"
 
+# State / config
+CONFIG_DIR="$HOME/.hackkit"
+CONFIG_FILE="$CONFIG_DIR/config.env"
+LOCK_FILE="$CONFIG_DIR/tools.lock"
+GO_MANIFEST="$HOME_DIR/manifests/go-tools.txt"
+WORKSPACES_DIR="${HACKKIT_WORKSPACES:-$PWD/workspaces}"
+
+# Load saved API keys/config so pipelines inherit them.
+load_config() { [[ -f "$CONFIG_FILE" ]] && set -a && . "$CONFIG_FILE" && set +a || true; }
+
 # ──────────────────────── BANNER ─────────────────────────────
 banner() {
 cat <<'EOF'
@@ -146,6 +156,183 @@ cmd_doctor() {
   fi
 }
 
+# ──────────────── SUBCOMMAND: config ─────────────────────────
+# Manage API keys / tokens for the tools (subfinder, chaos, github, …).
+# Stored in ~/.hackkit/config.env (chmod 600) and exported to pipelines.
+KNOWN_KEYS="GITHUB_TOKEN PDCP_API_KEY CHAOS_KEY SHODAN_API_KEY CENSYS_API_ID CENSYS_API_SECRET SECURITYTRAILS_KEY VIRUSTOTAL_KEY BINARYEDGE_KEY"
+
+config_ensure() {
+  mkdir -p "$CONFIG_DIR"; chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+  [[ -f "$CONFIG_FILE" ]] || { : > "$CONFIG_FILE"; }
+  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+config_set() {
+  local key="$1" val="$2"
+  [[ -z "$key" || -z "${val:-}" ]] && { err "Usage: hackkit config set KEY VALUE"; return 1; }
+  config_ensure
+  # strip any existing line, then append
+  grep -vE "^export ${key}=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null || true
+  mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+  printf 'export %s=%q\n' "$key" "$val" >> "$CONFIG_FILE"
+  chmod 600 "$CONFIG_FILE"
+  ok "Saved $key → $CONFIG_FILE"
+  # Keep subfinder's provider config in sync for recognised keys.
+  config_sync_subfinder
+}
+
+config_list() {
+  config_ensure
+  echo -e "${CYAN}${BOLD}  Config:${RESET} $CONFIG_FILE\n"
+  if [[ ! -s "$CONFIG_FILE" ]]; then
+    warn "No keys set yet. Add one with:  hackkit config set GITHUB_TOKEN <token>"
+    echo -e "\n${DIM}  Recognised keys: $KNOWN_KEYS${RESET}"
+    return 0
+  fi
+  # Print keys with masked values.
+  while IFS= read -r line; do
+    [[ "$line" =~ ^export ]] || continue
+    local kv="${line#export }"; local k="${kv%%=*}"; local v="${kv#*=}"
+    v="${v%\"}"; v="${v#\"}"; v="${v#\'}"; v="${v%\'}"
+    local masked="****"
+    [[ ${#v} -gt 4 ]] && masked="${v:0:2}****${v: -2}"
+    printf "  ${GREEN}%-22s${RESET} ${DIM}%s${RESET}\n" "$k" "$masked"
+  done < "$CONFIG_FILE"
+}
+
+# Write ~/.config/subfinder/provider-config.yaml from known keys.
+config_sync_subfinder() {
+  config_ensure; load_config
+  local pc="$HOME/.config/subfinder/provider-config.yaml"
+  mkdir -p "$(dirname "$pc")"
+  {
+    [[ -n "${CHAOS_KEY:-}"           ]] && printf 'chaos:\n  - %s\n'           "$CHAOS_KEY"
+    [[ -n "${SHODAN_API_KEY:-}"      ]] && printf 'shodan:\n  - %s\n'          "$SHODAN_API_KEY"
+    [[ -n "${SECURITYTRAILS_KEY:-}"  ]] && printf 'securitytrails:\n  - %s\n'  "$SECURITYTRAILS_KEY"
+    [[ -n "${VIRUSTOTAL_KEY:-}"      ]] && printf 'virustotal:\n  - %s\n'      "$VIRUSTOTAL_KEY"
+    [[ -n "${BINARYEDGE_KEY:-}"      ]] && printf 'binaryedge:\n  - %s\n'      "$BINARYEDGE_KEY"
+    [[ -n "${GITHUB_TOKEN:-}"        ]] && printf 'github:\n  - %s\n'          "$GITHUB_TOKEN"
+    if [[ -n "${CENSYS_API_ID:-}" && -n "${CENSYS_API_SECRET:-}" ]]; then
+      printf 'censys:\n  - %s:%s\n' "$CENSYS_API_ID" "$CENSYS_API_SECRET"
+    fi
+  } > "$pc" 2>/dev/null && chmod 600 "$pc" 2>/dev/null || true
+}
+
+cmd_config() {
+  local sub="${1:-list}"; [[ $# -gt 0 ]] && shift || true
+  case "$sub" in
+    set)             config_set "${1:-}" "${2:-}" ;;
+    list|ls|"")      config_list ;;
+    path)            echo "$CONFIG_FILE" ;;
+    edit)            config_ensure; "${EDITOR:-vi}" "$CONFIG_FILE" ;;
+    sync|sync-subfinder) config_sync_subfinder && ok "subfinder provider config synced." ;;
+    *) err "Unknown: hackkit config $sub"; echo "  Try: set | list | path | edit | sync" ;;
+  esac
+}
+
+# ──────────────── SUBCOMMAND: workspace ──────────────────────
+# Scaffold a per-target results directory.
+cmd_workspace() {
+  local target="${1:-}"
+  if [[ -z "$target" ]]; then
+    echo -e "${CYAN}${BOLD}  Workspaces under:${RESET} $WORKSPACES_DIR\n"
+    if [[ -d "$WORKSPACES_DIR" ]]; then
+      ls -1 "$WORKSPACES_DIR" 2>/dev/null | sed 's/^/  • /' || true
+    else
+      warn "No workspaces yet. Create one:  hackkit workspace example.com"
+    fi
+    return 0
+  fi
+  # sanitise target into a safe dir name
+  local safe; safe="$(echo "$target" | tr '/:' '__' | tr -cd 'A-Za-z0-9._-')"
+  local ws="$WORKSPACES_DIR/$safe"
+  mkdir -p "$ws"/{recon,fuzzing,xss,scans,screenshots,loot}
+  if [[ ! -f "$ws/notes.md" ]]; then
+    cat > "$ws/notes.md" <<NOTES
+# $target — engagement notes
+
+- Created: $(date '+%Y-%m-%d %H:%M')
+- Scope / authorization: <paste authorized scope here>
+
+## Findings
+
+## To-do
+NOTES
+  fi
+  ok "Workspace ready → ${BOLD}$ws${RESET}"
+  echo -e "${DIM}    recon/  fuzzing/  xss/  scans/  screenshots/  loot/  notes.md${RESET}"
+  echo -e "  Next:  ${BOLD}hackkit recon -d $target -o $ws/recon${RESET}"
+}
+
+# ──────────────── SUBCOMMAND: freeze ─────────────────────────
+# Rewrite manifests/go-tools.txt version column from the lockfile,
+# so the next install reproduces today's exact toolset.
+cmd_freeze() {
+  [[ -f "$LOCK_FILE" ]]     || { err "No lockfile at $LOCK_FILE — run the installer first."; return 1; }
+  [[ -f "$GO_MANIFEST" ]]   || { err "No manifest at $GO_MANIFEST."; return 1; }
+  [[ -w "$GO_MANIFEST" ]]   || { err "Manifest not writable: $GO_MANIFEST"; return 1; }
+  local tmp; tmp="$(mktemp)"
+  local changed=0
+  while IFS= read -r line; do
+    # passthrough comments/blanks
+    if [[ -z "$line" || "${line// }" == "" || "${line:0:1}" == "#" ]]; then
+      printf '%s\n' "$line" >> "$tmp"; continue
+    fi
+    local name module version rest
+    read -r name module version rest <<<"$line"
+    local locked; locked="$(awk -v n="$name" '$1==n{print $2; exit}' "$LOCK_FILE")"
+    if [[ -n "$locked" && "$locked" != "$version" ]]; then
+      printf '%-18s %-56s %s\n' "$name" "$module" "$locked" >> "$tmp"
+      changed=$((changed+1))
+    else
+      printf '%s\n' "$line" >> "$tmp"
+    fi
+  done < "$GO_MANIFEST"
+  mv "$tmp" "$GO_MANIFEST"
+  ok "Froze $changed tool version(s) into manifests/go-tools.txt"
+  echo -e "${DIM}  Commit the manifest to reproduce this toolset elsewhere.${RESET}"
+}
+
+# ──────────────── SUBCOMMAND: completion ─────────────────────
+cmd_completion() {
+  local shell="${1:-bash}"
+  case "$shell" in
+    bash)
+      cat <<'BASHC'
+# hackkit bash completion — add to ~/.bashrc:
+#   source <(hackkit completion bash)
+_hackkit() {
+  local cur prev cmds
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  cmds="recon fuzz xss doctor tools update config workspace freeze completion version help"
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "$cmds" -- "$cur") ); return
+  fi
+  case "${COMP_WORDS[1]}" in
+    config)    COMPREPLY=( $(compgen -W "set list path edit sync" -- "$cur") ) ;;
+    fuzz)      COMPREPLY=( $(compgen -W "-u -m -o -t" -- "$cur") ) ;;
+    completion)COMPREPLY=( $(compgen -W "bash zsh" -- "$cur") ) ;;
+  esac
+}
+complete -F _hackkit hackkit
+BASHC
+      ;;
+    zsh)
+      cat <<'ZSHC'
+# hackkit zsh completion — add to ~/.zshrc:
+#   source <(hackkit completion zsh)
+_hackkit() {
+  local -a cmds
+  cmds=(recon fuzz xss doctor tools update config workspace freeze completion version help)
+  _describe 'command' cmds
+}
+compdef _hackkit hackkit
+ZSHC
+      ;;
+    *) err "Unknown shell: $shell (use bash or zsh)"; return 1 ;;
+  esac
+}
+
 # ──────────────── SUBCOMMAND: help / version ─────────────────
 cmd_version() { echo "hackkit v${HACKKIT_VERSION}"; }
 
@@ -163,6 +350,10 @@ cmd_help() {
     doctor                       Verify installed tools & data (health check)
     tools                        List installed tools
     update                       Update tools + nuclei templates
+    config  [set|list|…]         Manage API keys/tokens for the tools
+    workspace [target]           Scaffold / list per-target results dirs
+    freeze                       Pin installed tool versions into the manifest
+    completion [bash|zsh]        Print shell completion script
     version                      Print version
     help                         Show this help
 
@@ -170,6 +361,8 @@ cmd_help() {
     hackkit recon -d example.com -o out/
     hackkit fuzz  -u https://example.com -m dir
     hackkit xss   -d example.com -b https://cb.example.net
+    hackkit config set GITHUB_TOKEN ghp_xxx
+    hackkit workspace example.com
     hackkit doctor
 
   ${DIM}Only test assets you are explicitly authorized to test.${RESET}
@@ -187,6 +380,8 @@ interactive_menu() {
   echo -e "  ${BLUE}${BOLD}[4]${RESET}  Doctor (health check) ${DIM}verify tools are installed${RESET}"
   echo -e "  ${BLUE}${BOLD}[5]${RESET}  List installed tools"
   echo -e "  ${YELLOW}${BOLD}[6]${RESET}  Update tools & templates"
+  echo -e "  ${CYAN}${BOLD}[7]${RESET}  New workspace         ${DIM}scaffold a per-target dir${RESET}"
+  echo -e "  ${CYAN}${BOLD}[8]${RESET}  Configure API keys"
   echo -e "  ${CYAN}${BOLD}[h]${RESET}  Help        ${DIM}[q] Quit${RESET}\n"
   echo -ne "${CYAN}${BOLD}  Choice: ${RESET}"
   read -r choice
@@ -200,6 +395,8 @@ interactive_menu() {
     4) cmd_doctor ;;
     5) cmd_tools ;;
     6) cmd_update ;;
+    7) read -rp "  Target name: " t; cmd_workspace "$t" ;;
+    8) cmd_config list ;;
     h|help) cmd_help ;;
     q|quit|exit) echo -e "${DIM}  Bye!${RESET}" ;;
     *) err "Invalid choice: $choice" ;;
@@ -218,10 +415,15 @@ main() {
     update|up)        cmd_update "$@" ;;
     tools|ls)         cmd_tools ;;
     doctor|check|dr)  cmd_doctor ;;
+    config|cfg)       cmd_config "$@" ;;
+    workspace|ws)     cmd_workspace "$@" ;;
+    freeze|pin)       cmd_freeze ;;
+    completion)       cmd_completion "$@" ;;
     version|-v|--version) cmd_version ;;
     help|-h|--help)   cmd_help ;;
     *) err "Unknown command: $cmd"; echo ""; cmd_help; exit 1 ;;
   esac
 }
 
+load_config
 main "$@"

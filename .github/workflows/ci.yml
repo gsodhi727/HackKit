@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, "claude/**" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Shell lint + launcher smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: bash -n (parse every script)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r -d '' f; do
+            echo "::group::bash -n $f"
+            bash -n "$f" || fail=1
+            echo "::endgroup::"
+          done < <(find . -type f \( -name '*.sh' -o -path './bin/hackkit' \) -not -path './.git/*' -print0)
+          bash -n bin/hackkit || fail=1
+          exit $fail
+
+      # Advisory: surfaces quoting/style issues as annotations without
+      # failing the build (real breakage is caught by `bash -n` above).
+      - name: ShellCheck (advisory)
+        continue-on-error: true
+        run: |
+          # SC1091: don't follow sourced files that only exist at runtime.
+          shellcheck -S warning -e SC1091 \
+            setup.sh install.sh bin/hackkit \
+            scripts/recon/recon.sh \
+            scripts/exploitation/xss-hunt.sh \
+            scripts/fuzzing/fuzz.sh \
+            scripts/utilities/update.sh \
+            docker/hackkit.sh
+
+      - name: Validate Go tools manifest
+        run: |
+          # Every non-comment line must have exactly 3 columns.
+          bad=$(awk 'NF && $1!~/^#/ && NF!=3 {print NR": "$0}' manifests/go-tools.txt)
+          if [ -n "$bad" ]; then echo "Malformed manifest lines:"; echo "$bad"; exit 1; fi
+          echo "manifest OK ($(awk 'NF && $1!~/^#/' manifests/go-tools.txt | wc -l) tools)"
+
+      - name: Launcher smoke test (no tools required)
+        env:
+          HACKKIT_HOME: ${{ github.workspace }}
+          HOME: ${{ runner.temp }}
+          HACKKIT_WORKSPACES: ${{ runner.temp }}/ws
+        run: |
+          set -e
+          chmod +x bin/hackkit
+          ./bin/hackkit version
+          ./bin/hackkit help >/dev/null
+          ./bin/hackkit completion bash >/dev/null
+          ./bin/hackkit completion zsh  >/dev/null
+          ./bin/hackkit config set GITHUB_TOKEN testtoken1234
+          ./bin/hackkit config list | grep -q GITHUB_TOKEN
+          ./bin/hackkit workspace example.com
+          test -d "$HACKKIT_WORKSPACES/example.com/recon"
+          # doctor exits 0 even with tools missing (report-only)
+          ./bin/hackkit doctor >/dev/null
+
+  dockerfile:
+    name: Dockerfile lint + build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hadolint (advisory)
+        continue-on-error: true
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Dockerfile build check (lint, no full build)
+        run: docker buildx build --check .
