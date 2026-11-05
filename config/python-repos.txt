@@ -1,0 +1,21 @@
+# ============================================================
+#  HackKit — Python tools cloned from GitHub into $TOOLS
+#  Used by: install.sh, Dockerfile, scripts/utilities/update.sh
+#  Format : <directory-name> <git-url>
+#  Each repo's requirements.txt is installed into the HackKit venv.
+# ============================================================
+GitHacker      https://github.com/WangYihang/GitHacker
+SecretFinder   https://github.com/m4ll0k/SecretFinder
+LinkFinder     https://github.com/GerbenJavado/LinkFinder
+urless         https://github.com/xnl-h4ck3r/urless
+ParamSpider    https://github.com/devanshbatham/ParamSpider
+dirsearch      https://github.com/maurosoria/dirsearch
+corsy          https://github.com/s0md3v/Corsy
+CORStest       https://github.com/RUB-NDS/CORStest
+xsstrike       https://github.com/s0md3v/XSStrike
+byp4xx         https://github.com/lobuhi/byp4xx
+403fuzzer      https://github.com/intrudir/403fuzzer
+SSRFmap        https://github.com/swisskyrepo/SSRFmap
+SQLiDetector   https://github.com/eslam3kl/SQLiDetector
+log4j-scan     https://github.com/fullhunt/log4j-scan
+ghauri         https://github.com/r0oth3x49/ghauri

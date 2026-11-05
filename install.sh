@@ -2,7 +2,7 @@
 # ============================================================
 #  HackKit — Bug Bounty Toolkit Installer
 #  Version : 2.0.0
-#  Author  : gsodhi727  (github.com/guru)
+#  Author  : gsodhi727  (github.com/gsodhi727)
 #  GitHub  : https://github.com/gsodhi727/hackkit
 #  License : MIT
 # ============================================================
@@ -17,10 +17,19 @@ DIM='\033[2m';     RESET='\033[0m'
 LOG_FILE="/tmp/hackkit_install_$(date +%Y%m%d_%H%M%S).log"
 TOOLS_DIR="$HOME/tools"
 WORDLISTS_DIR="$HOME/wordlists"
-GO_VERSION="1.22.4"
 PYTHON_VENV="$HOME/.hackkit-venv"
 ALIAS_FILE="/etc/profile.d/hackkit.sh"
 PASS=0; FAIL=0; SKIP=0
+ASSUME_YES=false
+[[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]] && ASSUME_YES=true
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_PREFIX="/opt/hackkit"
+
+# Shared Go / Python / binary installer (also used by Dockerfile and update.sh)
+export HK_ROOT="$SCRIPT_DIR" HK_LOG="$LOG_FILE" TOOLS="$TOOLS_DIR" HACKKIT_VENV="$PYTHON_VENV"
+# shellcheck source=scripts/lib/bootstrap.sh
+source "$SCRIPT_DIR/scripts/lib/bootstrap.sh"
 
 # ──────────────────────── BANNER ─────────────────────────────
 banner() {
@@ -69,38 +78,10 @@ run_quiet() {
   if "$@" >> "$LOG_FILE" 2>&1; then return 0; else return 1; fi
 }
 
-# ── Go tool via `go install` ──────────────────────────────────
-install_go_tool() {
-  local name="$1"
-  local pkg="$2"
-  progress "$name"
-  if command -v "$name" &>/dev/null; then
-    done_skip; ((SKIP++)) || true; return 0
-  fi
-  if run_quiet go install -v "$pkg@latest"; then
-    done_ok; ((PASS++)) || true
-  else
-    done_fail; ((FAIL++)) || true
-  fi
-}
-
-# ── Clone Python tool ─────────────────────────────────────────
-install_python_tool() {
-  local name="$1"
-  local repo="$2"
-  local dest="$TOOLS_DIR/$name"
-  progress "$name"
-  if [[ -d "$dest" ]]; then
-    done_skip; ((SKIP++)) || true; return 0
-  fi
-  if run_quiet git clone --depth 1 "$repo" "$dest"; then
-    if [[ -f "$dest/requirements.txt" ]]; then
-      run_quiet "$PYTHON_VENV/bin/pip" install -r "$dest/requirements.txt" --quiet
-    fi
-    done_ok; ((PASS++)) || true
-  else
-    done_fail; ((FAIL++)) || true
-  fi
+# Run a step and count it once, correctly. (The old
+# "cmd && done_ok || done_fail; ((PASS++))" counted failures as passes.)
+step_result() {
+  if "$@"; then done_ok; ((PASS++)) || true; else done_fail; ((FAIL++)) || true; fi
 }
 
 # ── APT package ───────────────────────────────────────────────
@@ -158,7 +139,7 @@ install_base_packages() {
     theharvester recon-ng fierce
     wireshark-common tshark
     ruby-full
-    libxml2 libxml2-dev libxslt-dev
+    libxml2 libxml2-dev libxslt1-dev
     net-tools iputils-ping
     tmux vim nano
     software-properties-common apt-transport-https ca-certificates
@@ -169,39 +150,18 @@ install_base_packages() {
   done
 }
 
-# ──────────────────────── GO SETUP ───────────────────────────
+# ─────────── GO, BINARIES & PYTHON (shared bootstrap) ────────
+# The tool lists live in config/ and the install logic in
+# scripts/lib/bootstrap.sh, which the Dockerfile and update.sh use too.
 install_go() {
   section "Go Language Setup"
-
-  if command -v go &>/dev/null; then
-    local cur
-    cur=$(go version | awk '{print $3}' | sed 's/go//')
-    info "Go $cur already installed — skipping"; ((SKIP++)) || true
+  hk_install_go || true
+  if ! command -v go &>/dev/null; then
+    warn "Go is not available — Go-based tools will be skipped."
     return 0
   fi
 
-  progress "Go $GO_VERSION"
-  local arch; arch=$(uname -m)
-  local go_arch="amd64"
-  [[ "$arch" == "aarch64" ]] && go_arch="arm64"
-  [[ "$arch" == "armv7l"  ]] && go_arch="armv6l"
-
-  local tarball="go${GO_VERSION}.linux-${go_arch}.tar.gz"
-  local url="https://go.dev/dl/$tarball"
-
-  if run_quiet curl -fsSL "$url" -o "/tmp/$tarball" && \
-     run_quiet tar -C /usr/local -xzf "/tmp/$tarball"; then
-    ln -sf /usr/local/go/bin/go    /usr/local/bin/go
-    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-    rm -f "/tmp/$tarball"
-    done_ok
-  else
-    done_fail
-    error "Go installation failed — Go tools will be skipped."
-    return 1
-  fi
-
-  # Persist GOPATH in shell profiles
+  # Persist Go paths in shell profiles
   for rc in /root/.bashrc /root/.zshrc /home/*/.bashrc /home/*/.zshrc; do
     [[ -f "$rc" ]] || continue
     grep -q 'GOPATH' "$rc" && continue
@@ -213,172 +173,33 @@ export GOPATH=$HOME/go
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 GOENV
   done
-  export GOROOT=/usr/local/go
-  export GOPATH=$HOME/go
-  export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
-  success "Go $GO_VERSION installed"
 }
 
-# ──────────────────── PYTHON VENV SETUP ──────────────────────
 setup_python_env() {
   section "Python3 Environment"
-  progress "Virtual environment"
-  if [[ -d "$PYTHON_VENV" ]]; then
-    done_skip; ((SKIP++)) || true
-  else
-    if run_quiet python3 -m venv "$PYTHON_VENV"; then
-      done_ok; ((PASS++)) || true
-    else
-      done_fail; ((FAIL++)) || true; return 1
-    fi
-  fi
-
-  info "Upgrading pip & installing base libraries..."
-  run_quiet "$PYTHON_VENV/bin/pip" install --upgrade pip setuptools wheel \
-    requests httpx aiohttp dnspython beautifulsoup4 lxml \
-    jsbeautifier wafw00f colorama tabulate tqdm --quiet
-  success "Python venv ready → $PYTHON_VENV"
-
+  hk_python_venv || true
   for rc in /root/.bashrc /root/.zshrc /home/*/.bashrc /home/*/.zshrc; do
     [[ -f "$rc" ]] || continue
     grep -q 'hackkit-venv' "$rc" && continue
-    echo "source $PYTHON_VENV/bin/activate" >> "$rc"
+    echo "[ -f $PYTHON_VENV/bin/activate ] && source $PYTHON_VENV/bin/activate" >> "$rc"
   done
 }
 
-# ──────────────────── GO TOOLS ───────────────────────────────
 install_go_tools() {
   section "Go-Based Tools"
-
-  # ── Subdomain & Recon ──
-  install_go_tool "subfinder"         "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
-  install_go_tool "assetfinder"       "github.com/tomnomnom/assetfinder"
-  install_go_tool "amass"             "github.com/owasp-amass/amass/v4/..."
-  install_go_tool "chaos"             "github.com/projectdiscovery/chaos-client/cmd/chaos"
-  install_go_tool "crobat"            "github.com/cgboal/sonarsearch/cmd/crobat"
-  install_go_tool "gotator"           "github.com/Josue87/gotator"
-  install_go_tool "alterx"            "github.com/projectdiscovery/alterx/cmd/alterx"
-
-  # ── HTTP & Probing ──
-  install_go_tool "httpx"             "github.com/projectdiscovery/httpx/cmd/httpx"
-  install_go_tool "httprobe"          "github.com/tomnomnom/httprobe"
-  install_go_tool "katana"            "github.com/projectdiscovery/katana/cmd/katana"
-  install_go_tool "gospider"          "github.com/jaeles-project/gospider"
-  install_go_tool "hakrawler"         "github.com/hakluke/hakrawler"
-
-  # ── URL & Wayback Machine ──
-  install_go_tool "gau"               "github.com/lc/gau/v2/cmd/gau"
-  install_go_tool "waybackurls"       "github.com/tomnomnom/waybackurls"
-  install_go_tool "waymore"           "github.com/xnl-h4ck3r/waymore"
-  install_go_tool "galer"             "github.com/dwisiswant0/galer"
-
-  # ── DNS ──
-  install_go_tool "dnsx"              "github.com/projectdiscovery/dnsx/cmd/dnsx"
-  install_go_tool "puredns"           "github.com/d3mondev/puredns/v2"
-  install_go_tool "shuffledns"        "github.com/projectdiscovery/shuffledns/cmd/shuffledns"
-  install_go_tool "massdns"           "github.com/blechschmidt/massdns/cmd/massdns" 2>/dev/null || true
-
-  # ── Port & Network ──
-  install_go_tool "naabu"             "github.com/projectdiscovery/naabu/v2/cmd/naabu"
-  install_go_tool "tlsx"              "github.com/projectdiscovery/tlsx/cmd/tlsx"
-  install_go_tool "cdncheck"          "github.com/projectdiscovery/cdncheck/cmd/cdncheck"
-  install_go_tool "asnmap"            "github.com/projectdiscovery/asnmap/cmd/asnmap"
-  install_go_tool "cf-check"          "github.com/dwisiswant0/cf-check"
-
-  # ── Fuzzing & Scanning ──
-  install_go_tool "ffuf"              "github.com/ffuf/ffuf/v2"
-  install_go_tool "gobuster"          "github.com/OJ/gobuster/v3"
-  install_go_tool "nuclei"            "github.com/projectdiscovery/nuclei/v3/cmd/nuclei"
-  install_go_tool "interactsh-client" "github.com/projectdiscovery/interactsh/cmd/interactsh-client"
-
-  # ── Screenshots ──
-  install_go_tool "gowitness"         "github.com/sensepost/gowitness"
-
-  # ── XSS ──
-  install_go_tool "dalfox"            "github.com/hahwul/dalfox/v2"
-  install_go_tool "kxss"              "github.com/Emoe/kxss"
-  install_go_tool "Gxss"              "github.com/KathanP19/Gxss"
-  install_go_tool "bxss"              "github.com/ethicalhackingplayground/bxss"
-
-  # ── Subdomain Takeover ──
-  install_go_tool "subzy"             "github.com/PentestPad/subzy"
-  install_go_tool "dnstake"           "github.com/pwnesia/dnstake"
-  install_go_tool "subjack"           "github.com/haccer/subjack"
-
-  # ── OSINT ──
-  install_go_tool "github-subdomains" "github.com/gwen001/github-subdomains"
-  install_go_tool "socialhunter"      "github.com/utkusen/socialhunter"
-  install_go_tool "trufflehog"        "github.com/trufflesecurity/trufflehog/v3"
-
-  # ── Utilities ──
-  install_go_tool "anew"              "github.com/tomnomnom/anew"
-  install_go_tool "qsreplace"         "github.com/tomnomnom/qsreplace"
-  install_go_tool "gron"              "github.com/tomnomnom/gron"
-  install_go_tool "fff"               "github.com/tomnomnom/fff"
-  install_go_tool "unfurl"            "github.com/tomnomnom/unfurl"
-  install_go_tool "mapcidr"           "github.com/projectdiscovery/mapcidr/cmd/mapcidr"
-  install_go_tool "notify"            "github.com/projectdiscovery/notify/cmd/notify"
-  install_go_tool "cent"              "github.com/xm1k3/cent"
-  install_go_tool "subzy"             "github.com/PentestPad/subzy"
+  hk_go_tools install || true
+  section "massdns (needed by puredns)"
+  hk_install_massdns || true
 }
 
-# ──────────────── FEROXBUSTER (Rust binary) ──────────────────
 install_feroxbuster() {
   section "Feroxbuster (Rust)"
-  progress "feroxbuster"
-  if command -v feroxbuster &>/dev/null; then
-    done_skip; ((SKIP++)) || true; return 0
-  fi
-  local url
-  url=$(curl -fsSL "https://api.github.com/repos/epi052/feroxbuster/releases/latest" \
-        | jq -r '.assets[] | select(.name | test("linux-x86_64.zip")) | .browser_download_url')
-  local tmp_dir; tmp_dir=$(mktemp -d)
-  if run_quiet curl -fsSL "$url" -o "$tmp_dir/feroxbuster.zip" && \
-     run_quiet unzip -q "$tmp_dir/feroxbuster.zip" -d "$tmp_dir" && \
-     run_quiet mv "$tmp_dir/feroxbuster" /usr/local/bin/feroxbuster && \
-     run_quiet chmod +x /usr/local/bin/feroxbuster; then
-    rm -rf "$tmp_dir"; done_ok; ((PASS++)) || true
-  else
-    rm -rf "$tmp_dir"; done_fail; ((FAIL++)) || true
-  fi
+  hk_install_feroxbuster install || true
 }
 
-# ──────────────────── PYTHON TOOLS ───────────────────────────
 install_python_tools() {
   section "Python Tools"
-  mkdir -p "$TOOLS_DIR"
-
-  install_python_tool "arjun"        "https://github.com/s0md3v/Arjun"
-  install_python_tool "GitHacker"    "https://github.com/WangYihang/GitHacker"
-  install_python_tool "SecretFinder" "https://github.com/m4ll0k/SecretFinder"
-  install_python_tool "LinkFinder"   "https://github.com/GerbenJavado/LinkFinder"
-  install_python_tool "uro"          "https://github.com/s0md3v/uro"
-  install_python_tool "urless"       "https://github.com/xnl-h4ck3r/urless"
-  install_python_tool "ParamSpider"  "https://github.com/devanshbatham/ParamSpider"
-  install_python_tool "dirsearch"    "https://github.com/maurosoria/dirsearch"
-  install_python_tool "corsy"        "https://github.com/s0md3v/Corsy"
-  install_python_tool "CORStest"     "https://github.com/RUB-NDS/CORStest"
-  install_python_tool "xsstrike"     "https://github.com/s0md3v/XSStrike"
-  install_python_tool "byp4xx"       "https://github.com/lobuhi/byp4xx"
-  install_python_tool "403fuzzer"    "https://github.com/intrudir/403fuzzer"
-  install_python_tool "SSRFmap"      "https://github.com/swisskyrepo/SSRFmap"
-  install_python_tool "SQLiDetector" "https://github.com/eslam3kl/SQLiDetector"
-  install_python_tool "log4j-scan"   "https://github.com/fullhunt/log4j-scan"
-  install_python_tool "ghauri"       "https://github.com/r0oth3x49/ghauri"
-
-  info "Installing pip tools..."
-  local pip_tools=(
-    "wafw00f" "arjun" "uro" "jsbeautifier"
-    "holehe" "sherlock" "dnsdumpster"
-  )
-  for t in "${pip_tools[@]}"; do
-    progress "$t"
-    if run_quiet "$PYTHON_VENV/bin/pip" install "$t" --quiet; then
-      done_ok; ((PASS++)) || true
-    else
-      done_fail; ((FAIL++)) || true
-    fi
-  done
+  hk_python_repos install || true
 }
 
 # ──────────────── NUCLEI TEMPLATES ───────────────────────────
@@ -408,28 +229,25 @@ setup_wordlists() {
   if [[ -d "$WORDLISTS_DIR/SecLists" ]]; then
     done_skip; ((SKIP++)) || true
   else
-    run_quiet git clone --depth 1 \
+    step_result run_quiet git clone --depth 1 \
       "https://github.com/danielmiessler/SecLists.git" \
-      "$WORDLISTS_DIR/SecLists" && done_ok || done_fail
-    ((PASS++)) || true
+      "$WORDLISTS_DIR/SecLists"
   fi
 
   progress "Assetnote best-dns-wordlist"
   if [[ ! -f "$WORDLISTS_DIR/best-dns-wordlist.txt" ]]; then
-    run_quiet curl -fsSL \
+    step_result run_quiet curl -fsSL \
       "https://wordlists-cdn.assetnote.io/data/manual/best-dns-wordlist.txt" \
-      -o "$WORDLISTS_DIR/best-dns-wordlist.txt" && done_ok || done_fail
-    ((PASS++)) || true
+      -o "$WORDLISTS_DIR/best-dns-wordlist.txt"
   else
     done_skip; ((SKIP++)) || true
   fi
 
   progress "Commonspeak2 subdomains"
   if [[ ! -f "$WORDLISTS_DIR/commonspeak2.txt" ]]; then
-    run_quiet curl -fsSL \
+    step_result run_quiet curl -fsSL \
       "https://raw.githubusercontent.com/assetnote/commonspeak2-wordlists/master/subdomains/subdomains.txt" \
-      -o "$WORDLISTS_DIR/commonspeak2.txt" && done_ok || done_fail
-    ((PASS++)) || true
+      -o "$WORDLISTS_DIR/commonspeak2.txt"
   else
     done_skip; ((SKIP++)) || true
   fi
@@ -442,49 +260,41 @@ setup_wordlists() {
 setup_resolvers() {
   section "DNS Resolvers"
   progress "Public resolvers"
-  run_quiet curl -fsSL \
+  step_result run_quiet curl -fsSL \
     "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" \
-    -o "$WORDLISTS_DIR/resolvers.txt" && done_ok || done_fail
-  ((PASS++)) || true
+    -o "$WORDLISTS_DIR/resolvers.txt"
+}
+
+# ──────────────── HACKKIT SCRIPTS ────────────────────────────
+# Copy the pipelines to the same place the Docker image uses, so the
+# recon/xss/fuzz aliases work no matter where the repo was cloned.
+install_scripts() {
+  section "HackKit Scripts"
+  progress "scripts → $INSTALL_PREFIX"
+  if [[ "$(realpath "$SCRIPT_DIR")" == "$(realpath -m "$INSTALL_PREFIX")" ]]; then
+    # Repo was cloned straight into /opt/hackkit — nothing to copy.
+    find "$INSTALL_PREFIX/scripts" -type f -name '*.sh' -exec chmod +x {} +
+    done_skip; ((SKIP++)) || true; return 0
+  fi
+  mkdir -p "$INSTALL_PREFIX"
+  if cp -r "$SCRIPT_DIR/scripts" "$SCRIPT_DIR/config" "$SCRIPT_DIR/requirements.txt" "$INSTALL_PREFIX/" \
+     && find "$INSTALL_PREFIX/scripts" -type f -name '*.sh' -exec chmod +x {} +; then
+    done_ok; ((PASS++)) || true
+  else
+    done_fail; ((FAIL++)) || true
+  fi
 }
 
 # ──────────────── ALIASES & HELPERS ──────────────────────────
 install_helpers() {
   section "Shell Aliases & Helpers"
-  cat > "$ALIAS_FILE" <<ALIASES
-# ── HackKit Aliases ─────────────────────────────────────────
-export WORDLISTS="\$HOME/wordlists"
-export TOOLS="\$HOME/tools"
-export HACKKIT_VENV="\$HOME/.hackkit-venv"
-
-# Python venv shortcut
-alias hkenv="source \$HACKKIT_VENV/bin/activate"
-
-# Recon
-alias sub-enum='f(){ subfinder -d \$1 | anew subs.txt | httpx -silent | anew alive.txt; }; f'
-alias nmap-quick='nmap -sCV -T4 --open'
-alias nmap-full='nmap -p- -sCV --open -T4'
-
-# Fuzzing
-alias ffuf-dir='ffuf -c -u FUZZ -w \$WORDLISTS/SecLists/Discovery/Web-Content/raft-medium-directories.txt'
-alias ffuf-vhost='ffuf -c -u http://TARGET -H "Host: FUZZ.TARGET" -w \$WORDLISTS/SecLists/Discovery/DNS/subdomains-top1million-110000.txt'
-alias ferox-dir='feroxbuster -u'
-
-# Probing
-alias naabu-quick='naabu -top-ports 1000 -silent'
-alias httpx-probe='httpx -silent -status-code -title -tech-detect'
-alias nuclei-fast='nuclei -severity critical,high -silent'
-alias nuclei-all='nuclei -severity critical,high,medium,low -silent'
-
-# Tools dir shortcuts
-alias tools='ls \$TOOLS'
-alias wl='ls \$WORDLISTS'
-ALIASES
-
-  chmod +x "$ALIAS_FILE"
-  # shellcheck source=/dev/null
-  source "$ALIAS_FILE" 2>/dev/null || true
-  success "Aliases installed → $ALIAS_FILE"
+  # Same file the Docker image uses, so both environments behave alike.
+  if cp "$SCRIPT_DIR/docker/hackkit.sh" "$ALIAS_FILE"; then
+    chmod 644 "$ALIAS_FILE"
+    success "Aliases installed → $ALIAS_FILE"
+  else
+    error "Could not write $ALIAS_FILE"
+  fi
 }
 
 # ──────────────────── ZSH + Oh-My-Zsh ───────────────────────
@@ -495,19 +305,17 @@ install_zsh() {
   if [[ -d "$HOME/.oh-my-zsh" ]]; then
     done_skip; ((SKIP++)) || true
   else
-    run_quiet sh -c \
+    step_result run_quiet sh -c \
       "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
-      "" --unattended && done_ok || done_fail
-    ((PASS++)) || true
+      "" --unattended
   fi
 
   progress "zsh-autosuggestions"
   local zsh_custom="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
   if [[ ! -d "$zsh_custom/plugins/zsh-autosuggestions" ]]; then
-    run_quiet git clone --depth 1 \
+    step_result run_quiet git clone --depth 1 \
       https://github.com/zsh-users/zsh-autosuggestions \
-      "$zsh_custom/plugins/zsh-autosuggestions" && done_ok || done_fail
-    ((PASS++)) || true
+      "$zsh_custom/plugins/zsh-autosuggestions"
   else
     done_skip; ((SKIP++)) || true
   fi
@@ -546,9 +354,14 @@ install_docker() {
   if command -v docker &>/dev/null; then
     done_skip; ((SKIP++)) || true; return 0
   fi
-  if run_quiet curl -fsSL https://get.docker.com | bash; then
-    run_quiet systemctl enable docker --quiet || true
-    run_quiet systemctl start  docker --quiet || true
+  # Distro package instead of "curl get.docker.com | bash": signed by the
+  # distro, no remote script run as root. (The old pipe also sent the script
+  # into the log file, so bash ran nothing while reporting success.)
+  if run_quiet apt-get install -y docker.io; then
+    run_quiet apt-get install -y docker-compose-v2 \
+      || run_quiet apt-get install -y docker-compose-plugin \
+      || run_quiet apt-get install -y docker-compose || true
+    run_quiet systemctl enable --now docker || true
     done_ok; ((PASS++)) || true
   else
     done_fail; ((FAIL++)) || true
@@ -565,6 +378,7 @@ cleanup() {
 
 # ──────────────────── SUMMARY ────────────────────────────────
 print_summary() {
+  PASS=$((PASS + BS_PASS)); FAIL=$((FAIL + BS_FAIL)); SKIP=$((SKIP + BS_SKIP))
   echo ""
   echo -e "${CYAN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo -e "${CYAN}${BOLD}  HACKKIT — INSTALLATION SUMMARY${RESET}"
@@ -580,6 +394,7 @@ print_summary() {
   echo -e "  ${BOLD}Log file    :${RESET} $LOG_FILE"
   echo ""
   if [[ $FAIL -gt 0 ]]; then
+    (( ${#BS_FAILED_ITEMS[@]} > 0 )) && warn "Failed: ${BS_FAILED_ITEMS[*]}"
     warn "Some tools failed. See log: ${BOLD}$LOG_FILE${RESET}"
   else
     success "All tools installed! Happy Hunting! 🎯"
@@ -598,9 +413,11 @@ main() {
   check_root
   detect_os
 
-  echo -e "${YELLOW}${BOLD}  This will install 80+ tools. Continue? [Y/n]:${RESET} \c"
-  read -r ans
-  [[ "${ans,,}" =~ ^(n|no)$ ]] && { echo "Aborted."; exit 0; }
+  if ! $ASSUME_YES; then
+    echo -e "${YELLOW}${BOLD}  This will install 80+ tools. Continue? [Y/n]:${RESET} \c"
+    read -r ans
+    [[ "${ans,,}" =~ ^(n|no)$ ]] && { echo "Aborted."; exit 0; }
+  fi
 
   install_base_packages
   install_go
@@ -611,6 +428,7 @@ main() {
   setup_nuclei_templates
   setup_wordlists
   setup_resolvers
+  install_scripts
   install_helpers
   install_zsh
   setup_tmux

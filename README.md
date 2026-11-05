@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/Tools-80%2B-blueviolet?style=for-the-badge&logo=linux"/>
   <img src="https://img.shields.io/badge/Platform-Debian%20%7C%20Ubuntu%20%7C%20Kali-orange?style=for-the-badge&logo=ubuntu"/>
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker"/>
-  <img src="https://img.shields.io/badge/Go-1.22-00ADD8?style=for-the-badge&logo=go"/>
+  <img src="https://img.shields.io/badge/Go-1.21%2B-00ADD8?style=for-the-badge&logo=go"/>
   <img src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python"/>
   <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/Author-guru-ff69b4?style=for-the-badge"/>
@@ -76,17 +76,19 @@ sudo bash install.sh
 | Step | Action |
 |------|--------|
 | 1 | Updates apt & installs system packages (`nmap`, `john`, `sqlmap`, etc.) |
-| 2 | Installs Go 1.22 + sets `GOPATH` |
+| 2 | Installs the current Go release (skipped if Go ≥ 1.21 exists) + sets `GOPATH` |
 | 3 | Creates isolated Python venv at `~/.hackkit-venv` |
 | 4 | Installs 50+ Go tools via `go install` |
-| 5 | Installs Feroxbuster (Rust binary) |
+| 5 | Installs Feroxbuster (Rust binary, x86_64 or arm64) and builds `massdns` (needed by `puredns`) |
 | 6 | Clones 15+ Python tools, installs their requirements |
 | 7 | Downloads Nuclei templates (official + community) |
 | 8 | Downloads SecLists, Assetnote, Commonspeak2 wordlists |
 | 9 | Downloads public DNS resolvers |
 | 10 | Installs ZSH + Oh-My-Zsh + zsh-autosuggestions |
 | 11 | Configures Tmux |
-| 12 | Installs shell aliases in `/etc/profile.d/hackkit.sh` |
+| 12 | Installs shell aliases in `/etc/profile.d/hackkit.sh` and copies the scripts to `/opt/hackkit` |
+
+Non-interactive (CI / provisioning): `sudo bash install.sh -y`
 
 > Tested on **Ubuntu 22.04 LTS**, **Debian 12**, **Kali Linux 2024**
 
@@ -132,6 +134,10 @@ docker run -it --rm \
 # Build & launch with Docker Compose (persistent volumes)
 docker compose run --rm hackkit
 
+# Run a pipeline directly, without opening a shell (results → ./workspace)
+docker compose run --rm hackkit recon -d target.com
+docker run --rm --network host -v $(pwd)/workspace:/root/workspace hackkit xss -d target.com
+
 # Pull from Docker Hub (no build needed)
 docker pull gsodhi727/hackkit && docker run -it --rm --network host gsodhi727/hackkit
 ```
@@ -143,9 +149,11 @@ Docker Compose stores these in named volumes — they survive container restarts
 | Volume | Contains |
 |--------|----------|
 | `hackkit-wordlists` | SecLists, DNS lists, resolvers |
-| `hackkit-gobin` | Go tool binaries |
-| `hackkit-tools` | Cloned Python tools |
 | `hackkit-nuclei` | Nuclei templates |
+
+Tool binaries are deliberately **not** in volumes: a volume keeps its first contents,
+so a rebuilt image would keep running the old tools. Rebuild the image (or run `update`)
+to get new versions.
 
 Your **`workspace/`** folder is bind-mounted from the host, so all recon results stay on your machine even after the container stops.
 
@@ -176,7 +184,6 @@ Your **`workspace/`** folder is bind-mounted from the host, so all recon results
 | `assetfinder` | Finds related domains and assets |
 | `amass` | In-depth DNS enumeration (OWASP) |
 | `chaos` | ProjectDiscovery chaos dataset |
-| `crobat` | Rapid7 Sonar search |
 | `gotator` | Permutation-based subdomain generator |
 | `alterx` | Subdomain alteration & permutation |
 | `dnsx` | Fast DNS resolver & prober |
@@ -309,7 +316,14 @@ bash scripts/fuzzing/fuzz.sh -u https://target.com -m param
 sudo bash scripts/utilities/update.sh
 ```
 
-Inside Docker, these are available as short aliases:
+Each script checks its input (domain / URL / thread count), stops early if a required
+tool is missing, and writes every tool's errors to `<output>/logs/` — a failed step is
+reported as a warning instead of silently producing empty files. `recon.sh` writes bare
+URLs to `alive/alive.txt` (what nuclei/katana/gowitness need) and the human-readable
+httpx output to `alive/httpx_details.txt`. Put API keys such as `PDCP_API_KEY` (enables
+`chaos`) in a `.env` file — see `.env.example`.
+
+After `install.sh`, and inside Docker, these are available as short aliases:
 ```bash
 recon -d target.com
 xss   -d target.com
@@ -347,15 +361,24 @@ hackkit/
 ├── install.sh           ← Direct installer (Method 1)
 ├── Dockerfile           ← Docker image definition (Method 2)
 ├── docker-compose.yml   ← Docker Compose with volumes
-├── requirements.txt     ← Python dependencies
+├── requirements.txt     ← Python packages (pip)
+├── config/
+│   ├── go-tools.txt     ← Every Go tool (name + package) — one list for all installers
+│   └── python-repos.txt ← Python tools cloned from GitHub
 ├── scripts/
+│   ├── lib/
+│   │   ├── bootstrap.sh ← Shared installer used by install.sh, Dockerfile, update.sh
+│   │   └── common.sh    ← Input validation, tool checks, logging for the pipelines
 │   ├── recon/           ← Recon automation pipeline (recon.sh)
 │   ├── exploitation/    ← XSS discovery pipeline (xss-hunt.sh)
 │   ├── fuzzing/         ← Multi-mode fuzzer (fuzz.sh)
 │   └── utilities/       ← One-command tool updater (update.sh)
 ├── docker/
-│   ├── hackkit.sh       ← Aliases for container sessions
+│   ├── entrypoint.sh    ← Container entrypoint (shell, or run a pipeline)
+│   ├── hackkit.sh       ← Aliases for shell sessions (container + native)
 │   └── .tmux.conf       ← Tmux config
+├── tests/smoke.sh       ← Offline tests for the pipelines (run by CI)
+├── .env.example         ← Template for API keys (copy to .env, git-ignored)
 └── workspace/           ← Your results (git-ignored)
 ```
 
@@ -371,10 +394,17 @@ hackkit/
 
 ## 🤝 Contributing
 
-PRs welcome! To add a tool:
-- **Go tool** → add `install_go_tool "name" "github.com/..."` in `install.sh`
-- **Python tool** → add `install_python_tool "name" "https://github.com/..."` in `install.sh`
-- **Dockerfile** → add the corresponding `RUN go install ...` or `git clone` line
+PRs welcome! To add a tool, edit **one** file — `install.sh`, the Docker image and
+`update.sh` all read the same lists:
+- **Go tool** → add `name  github.com/owner/repo/cmd/name` to `config/go-tools.txt`
+- **Python tool from GitHub** → add `name  https://github.com/owner/repo` to `config/python-repos.txt`
+- **pip package** → add it to `requirements.txt`
+
+Before opening a PR, run the same checks as CI:
+```bash
+shellcheck -x -S warning setup.sh install.sh scripts/*/*.sh docker/*.sh tests/*.sh
+bash tests/smoke.sh
+```
 
 ---
 

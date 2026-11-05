@@ -33,9 +33,11 @@ echo -e "${CYAN}${BOLD}  │   github.com/gsodhi727/hackkit    ·  80+ tools rea
 echo -e "${CYAN}${BOLD}  └──────────────────────────────────────────────────────────────┘${RESET}"
 echo ""
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ──────────────── ENVIRONMENT DETECTION ──────────────────────
 DOCKER_OK=false
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+if command -v docker &>/dev/null && docker info &>/dev/null; then
   DOCKER_OK=true
 fi
 
@@ -56,7 +58,11 @@ echo -e "       ${DIM}Best for: any machine with Docker; no system changes${RESE
 if $DOCKER_OK; then
   echo -e "       ${GREEN}✓ Docker is available on this system${RESET}"
 else
-  echo -e "       ${YELLOW}⚠ Docker not found — will install it first${RESET}"
+  if command -v docker &>/dev/null; then
+    echo -e "       ${YELLOW}⚠ Docker is installed but not reachable (daemon stopped or no permission)${RESET}"
+  else
+    echo -e "       ${YELLOW}⚠ Docker not found — will install it first (needs sudo)${RESET}"
+  fi
 fi
 
 echo ""
@@ -80,7 +86,6 @@ direct_install() {
     exit 1
   fi
 
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   INSTALLER="$SCRIPT_DIR/install.sh"
 
   if [[ ! -f "$INSTALLER" ]]; then
@@ -96,20 +101,59 @@ direct_install() {
 # ════════════════════════════════════════════════════════════
 # OPTION 2 — DOCKER
 # ════════════════════════════════════════════════════════════
+build_image() {
+  echo -e "${BLUE}  [*] Building HackKit Docker image...${RESET}"
+  echo -e "  ${DIM}This may take 10–20 minutes on first run.${RESET}"
+  echo ""
+  docker build -t hackkit "$SCRIPT_DIR"
+  echo ""
+}
+
+run_image() {
+  echo -e "${GREEN}  [✓] Launching shell...${RESET}"
+  echo ""
+  docker run -it --rm \
+    --hostname hackkit \
+    --cap-add NET_RAW \
+    --cap-add NET_ADMIN \
+    --network host \
+    -v "$SCRIPT_DIR/workspace:/root/workspace" \
+    "$1"
+}
+
 docker_install() {
   echo -e "${BLUE}${BOLD}  ▸ Docker Installation selected${RESET}"
   echo ""
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
   # ── Install Docker if missing ─────────────────────────────
   if ! $DOCKER_OK; then
-    echo -e "${YELLOW}  [!] Docker not found. Installing Docker Engine...${RESET}"
-    if ! command -v curl &>/dev/null; then
-      apt-get update -y &>/dev/null && apt-get install -y curl &>/dev/null
+    if command -v docker &>/dev/null; then
+      # Installed but not usable: usually the daemon is stopped or the user
+      # isn't in the "docker" group. Installing again wouldn't help.
+      echo -e "${RED}  [!] Docker is installed but not reachable (daemon stopped, or no permission).${RESET}"
+      echo -e "  Try: ${BOLD}sudo systemctl start docker${RESET}  or  ${BOLD}sudo usermod -aG docker \$USER${RESET} (then log in again)"
+      exit 1
     fi
-    curl -fsSL https://get.docker.com | bash
-    systemctl enable docker --quiet 2>/dev/null || true
-    systemctl start  docker --quiet 2>/dev/null || true
+    if ! $ROOT_OK; then
+      echo -e "${RED}  [!] Installing Docker requires root.${RESET}  Run: ${BOLD}sudo bash setup.sh${RESET}"
+      exit 1
+    fi
+    if ! command -v apt-get &>/dev/null; then
+      echo -e "${RED}  [!] No apt-get found. Install Docker for your OS: https://docs.docker.com/engine/install/${RESET}"
+      exit 1
+    fi
+    # Distro-signed package instead of piping get.docker.com into bash as root.
+    echo -e "${YELLOW}  [!] Docker not found. Installing docker.io from your distro...${RESET}"
+    apt-get update -y
+    apt-get install -y docker.io
+    apt-get install -y docker-compose-v2 2>/dev/null \
+      || apt-get install -y docker-compose-plugin 2>/dev/null \
+      || echo -e "${YELLOW}  [!] Docker Compose plugin not available — option [c] will fall back to docker run.${RESET}"
+    systemctl enable --now docker 2>/dev/null || true
+    if ! docker info &>/dev/null; then
+      echo -e "${RED}  [!] Docker installed but the daemon isn't running. Start it and re-run setup.sh.${RESET}"
+      exit 1
+    fi
     echo -e "${GREEN}  [✓] Docker installed${RESET}"
     echo ""
   fi
@@ -130,37 +174,18 @@ docker_install() {
   mkdir -p "$SCRIPT_DIR/workspace"
 
   case "${DCHOICE,,}" in
-    a)
-      echo -e "${BLUE}  [*] Building HackKit Docker image...${RESET}"
-      echo -e "  ${DIM}This may take 10–20 minutes on first run.${RESET}"
-      echo ""
-      docker build -t hackkit "$SCRIPT_DIR"
-      echo ""
-      echo -e "${GREEN}  [✓] Build complete. Launching shell...${RESET}"
-      echo ""
-      docker run -it --rm \
-        --hostname hackkit \
-        --cap-add NET_RAW \
-        --cap-add NET_ADMIN \
-        --network host \
-        -v "$SCRIPT_DIR/workspace:/root/workspace" \
-        hackkit
-      ;;
+    a) build_image && run_image hackkit ;;
     b)
-      echo -e "${BLUE}  [*] Building HackKit Docker image (no launch)...${RESET}"
-      echo -e "  ${DIM}This may take 10–20 minutes on first run.${RESET}"
-      echo ""
-      docker build -t hackkit "$SCRIPT_DIR"
-      echo ""
+      build_image
       echo -e "${GREEN}  [✓] Image 'hackkit' built successfully!${RESET}"
       echo ""
       echo -e "  To launch later:"
-      echo -e "  ${BOLD}  docker run -it --rm --cap-add NET_RAW --network host -v \$(pwd)/workspace:/root/workspace hackkit${RESET}"
+      echo -e "  ${BOLD}  docker run -it --rm --cap-add NET_RAW --cap-add NET_ADMIN --network host -v \$(pwd)/workspace:/root/workspace hackkit${RESET}"
       ;;
     c)
-      if ! command -v "docker" &>/dev/null || ! docker compose version &>/dev/null 2>&1; then
-        echo -e "${YELLOW}  [!] Docker Compose not available. Falling back to docker run.${RESET}"
-        docker_install
+      if ! docker compose version &>/dev/null; then
+        echo -e "${YELLOW}  [!] Docker Compose not available. Falling back to docker build + run.${RESET}"
+        build_image && run_image hackkit
         return
       fi
       echo -e "${BLUE}  [*] Using Docker Compose...${RESET}"
@@ -177,18 +202,11 @@ docker_install() {
         echo ""
         echo -e "${GREEN}  [✓] Image pulled. Launching shell...${RESET}"
         echo ""
-        docker run -it --rm \
-          --hostname hackkit \
-          --cap-add NET_RAW \
-          --cap-add NET_ADMIN \
-          --network host \
-          -v "$SCRIPT_DIR/workspace:/root/workspace" \
-          gsodhi727/hackkit:latest
+        run_image gsodhi727/hackkit:latest
       else
-        echo -e "${YELLOW}  [!] Pull failed (image may not be published yet).${RESET}"
-        echo -e "  Falling back to local build..."
-        DCHOICE="a"
-        docker_install
+        # (Before, this re-ran the whole menu instead of building.)
+        echo -e "${YELLOW}  [!] Pull failed (image may not be published yet). Building locally instead...${RESET}"
+        build_image && run_image hackkit
       fi
       ;;
     *)

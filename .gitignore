@@ -28,3 +28,7 @@ xss-*/
 fuzz-*/
 workspace/
 *.txt.bak
+
+# Local secrets (API keys for chaos, shodan, etc.)
+.env.*
+!.env.example
